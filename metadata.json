@@ -1,0 +1,6 @@
+{
+  "name": "nderiskool | Deriv Forex Terminal",
+  "description": "Professional Forex & synthetic index trading platform for nderiskool, powered by real-time Deriv WebSocket connection, live candlestick charting, technical indicators, and execution terminal.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
