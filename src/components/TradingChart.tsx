@@ -99,7 +99,7 @@ export const TradingChart: React.FC = () => {
     const rightMargin = 72; // price scale margin
 
     // Clear background
-    ctx.fillStyle = '#0b0e14';
+    ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, width, height);
 
     // Calculate Min & Max price for scaling
@@ -145,7 +145,7 @@ export const TradingChart: React.FC = () => {
 
     // Draw horizontal grid lines & price labels
     const gridSteps = 5;
-    ctx.strokeStyle = '#1e293b';
+    ctx.strokeStyle = '#e2e8f0';
     ctx.lineWidth = 1;
     ctx.setLineDash([3, 3]);
 
@@ -354,7 +354,12 @@ export const TradingChart: React.FC = () => {
 
       // Floating Entry Marker Badge
       ctx.setLineDash([]);
-      const badgeText = `${pos.direction} ${pos.multiplier}x · Entry: ${pos.entryPrice} (${pos.pnl >= 0 ? '+' : ''}$${pos.pnl.toFixed(2)})`;
+      const badgeText =
+        pos.type === 'HIGHER_LOWER'
+          ? `${pos.direction === 'SELL' ? 'LOWER' : 'HIGHER'} · Barrier: ${pos.barrier || pos.entryPrice}`
+          : pos.type === 'DIGIT_UNDER_OVER'
+          ? `${pos.direction === 'SELL' ? 'UNDER' : 'OVER'} ${pos.selectedDigit ?? 5} (${pos.remainingTicks ?? 1}t left)`
+          : `${pos.direction} ${pos.multiplier}x · Entry: ${pos.entryPrice} (${pos.pnl >= 0 ? '+' : ''}$${pos.pnl.toFixed(2)})`;
       ctx.font = '10px "JetBrains Mono", monospace';
       const textWidth = ctx.measureText(badgeText).width;
 
@@ -365,6 +370,22 @@ export const TradingChart: React.FC = () => {
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
       ctx.fillText(badgeText, 14, entryY);
+
+      // Target Barrier Line for Higher / Lower contracts
+      if (pos.barrier) {
+        const barY = getY(pos.barrier);
+        ctx.setLineDash([4, 4]);
+        ctx.strokeStyle = '#f43f5e';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(0, barY);
+        ctx.lineTo(chartWidth, barY);
+        ctx.stroke();
+
+        ctx.fillStyle = '#f43f5e';
+        ctx.font = 'bold 9px "JetBrains Mono", monospace';
+        ctx.fillText(`BARRIER: ${pos.barrier} (${pos.direction === 'SELL' ? 'TARGET LOWER <' : 'TARGET HIGHER >'})`, 8, barY - 6);
+      }
 
       // TP Line
       if (pos.takeProfitPrice) {
@@ -424,7 +445,7 @@ export const TradingChart: React.FC = () => {
     ctx.fillText(currentPrice.toFixed(decimals), chartWidth + rightMargin / 2, currentY);
 
     // Draw Bottom Time Axis
-    ctx.strokeStyle = '#1e293b';
+    ctx.strokeStyle = '#cbd5e1';
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(0, mainHeight);
@@ -451,7 +472,7 @@ export const TradingChart: React.FC = () => {
       const rsiTop = height - rsiHeight;
 
       // Divider line
-      ctx.strokeStyle = '#334155';
+      ctx.strokeStyle = '#cbd5e1';
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(0, rsiTop);
@@ -459,7 +480,7 @@ export const TradingChart: React.FC = () => {
       ctx.stroke();
 
       // RSI Label
-      ctx.fillStyle = '#94a3b8';
+      ctx.fillStyle = '#475569';
       ctx.font = '10px "JetBrains Mono", monospace';
       ctx.textAlign = 'left';
       ctx.fillText('RSI (14)', 8, rsiTop + 8);
@@ -579,34 +600,34 @@ export const TradingChart: React.FC = () => {
   return (
     <div
       ref={containerRef}
-      className={`relative flex flex-col bg-[#0b0e14] border border-slate-800 rounded-lg overflow-hidden ${
+      className={`relative flex flex-col bg-white border border-slate-200 rounded-2xl shadow-xs overflow-hidden ${
         isFullscreen ? 'fixed inset-0 z-50 rounded-none' : 'h-full min-h-[460px]'
       }`}
     >
       {/* Top Chart Toolbar */}
-      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 bg-[#0f141f] border-b border-slate-800 text-xs select-none">
+      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 bg-slate-50/90 border-b border-slate-200 text-xs select-none">
         {/* Left: Symbol & OHLC values */}
         <div className="flex items-center gap-4 flex-wrap">
           <div className="flex items-center gap-2">
-            <span className="font-bold text-slate-100 text-sm tracking-tight">{activeSymbol.displayName}</span>
-            <span className="text-[10px] text-slate-400 uppercase font-mono">
+            <span className="font-bold text-slate-900 text-sm tracking-tight">{activeSymbol.displayName}</span>
+            <span className="text-[10px] text-slate-500 uppercase font-mono">
               {activeSymbol.category.replace('_', ' ')}
             </span>
           </div>
 
           {activeCandle && (
-            <div className="hidden lg:flex items-center gap-3 font-mono text-[11px] text-slate-400">
+            <div className="hidden lg:flex items-center gap-3 font-mono text-[11px] text-slate-500">
               <span>
-                O: <span className="text-slate-200">{activeCandle.open}</span>
+                O: <span className="text-slate-900 font-semibold">{activeCandle.open}</span>
               </span>
               <span>
-                H: <span className="text-emerald-400">{activeCandle.high}</span>
+                H: <span className="text-emerald-600 font-semibold">{activeCandle.high}</span>
               </span>
               <span>
-                L: <span className="text-rose-400">{activeCandle.low}</span>
+                L: <span className="text-rose-600 font-semibold">{activeCandle.low}</span>
               </span>
               <span>
-                C: <span className="text-slate-200">{activeCandle.close}</span>
+                C: <span className="text-slate-900 font-semibold">{activeCandle.close}</span>
               </span>
             </div>
           )}
@@ -615,7 +636,7 @@ export const TradingChart: React.FC = () => {
         {/* Right: Timeframe, Chart type, Indicators & Fullscreen */}
         <div className="flex items-center gap-2 flex-wrap">
           {/* Timeframes */}
-          <div className="flex items-center bg-slate-900 border border-slate-800 rounded p-0.5">
+          <div className="flex items-center bg-white border border-slate-200 rounded-lg p-0.5">
             {[
               { label: '1M', sec: 60 },
               { label: '5M', sec: 300 },
@@ -626,10 +647,10 @@ export const TradingChart: React.FC = () => {
               <button
                 key={tf.sec}
                 onClick={() => setTimeframe(tf.sec)}
-                className={`px-2 py-1 text-[11px] font-mono rounded transition-colors ${
+                className={`px-2 py-1 text-[11px] font-mono rounded-md transition-colors cursor-pointer ${
                   timeframe === tf.sec
-                    ? 'bg-blue-600 text-white font-medium shadow-sm'
-                    : 'text-slate-400 hover:text-slate-200'
+                    ? 'bg-[#0b1930] text-white font-semibold shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
                 {tf.label}
@@ -638,12 +659,12 @@ export const TradingChart: React.FC = () => {
           </div>
 
           {/* Chart Style: Candle vs Line */}
-          <div className="flex items-center bg-slate-900 border border-slate-800 rounded p-0.5">
+          <div className="flex items-center bg-white border border-slate-200 rounded-lg p-0.5">
             <button
               onClick={() => setChartType('candle')}
               title="Candlestick Chart"
-              className={`p-1 rounded transition-colors ${
-                chartType === 'candle' ? 'bg-slate-700 text-emerald-400' : 'text-slate-400 hover:text-slate-200'
+              className={`p-1 rounded-md transition-colors cursor-pointer ${
+                chartType === 'candle' ? 'bg-teal-50 text-teal-700' : 'text-slate-500 hover:text-slate-900'
               }`}
             >
               <BarChart2 className="w-3.5 h-3.5" />
@@ -651,8 +672,8 @@ export const TradingChart: React.FC = () => {
             <button
               onClick={() => setChartType('line')}
               title="Area Line Chart"
-              className={`p-1 rounded transition-colors ${
-                chartType === 'line' ? 'bg-slate-700 text-blue-400' : 'text-slate-400 hover:text-slate-200'
+              className={`p-1 rounded-md transition-colors cursor-pointer ${
+                chartType === 'line' ? 'bg-teal-50 text-teal-700' : 'text-slate-500 hover:text-slate-900'
               }`}
             >
               <TrendingUp className="w-3.5 h-3.5" />
@@ -660,29 +681,29 @@ export const TradingChart: React.FC = () => {
           </div>
 
           {/* Indicators toggles */}
-          <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 rounded p-0.5">
+          <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-lg p-0.5">
             <button
               onClick={() => toggleIndicator('ema')}
-              className={`px-2 py-1 text-[10px] font-mono rounded transition-colors ${
-                indicators.ema ? 'bg-cyan-950 text-cyan-400 border border-cyan-800/60' : 'text-slate-400 hover:text-slate-200'
+              className={`px-2 py-1 text-[10px] font-mono rounded-md transition-colors cursor-pointer ${
+                indicators.ema ? 'bg-cyan-50 text-cyan-800 border border-cyan-200 font-semibold' : 'text-slate-500 hover:text-slate-900'
               }`}
             >
               EMA 9/21
             </button>
             <button
               onClick={() => toggleIndicator('bollinger')}
-              className={`px-2 py-1 text-[10px] font-mono rounded transition-colors ${
+              className={`px-2 py-1 text-[10px] font-mono rounded-md transition-colors cursor-pointer ${
                 indicators.bollinger
-                  ? 'bg-sky-950 text-sky-400 border border-sky-800/60'
-                  : 'text-slate-400 hover:text-slate-200'
+                  ? 'bg-sky-50 text-sky-800 border border-sky-200 font-semibold'
+                  : 'text-slate-500 hover:text-slate-900'
               }`}
             >
               BB (20,2)
             </button>
             <button
               onClick={() => toggleIndicator('rsi')}
-              className={`px-2 py-1 text-[10px] font-mono rounded transition-colors ${
-                indicators.rsi ? 'bg-purple-950 text-purple-400 border border-purple-800/60' : 'text-slate-400 hover:text-slate-200'
+              className={`px-2 py-1 text-[10px] font-mono rounded-md transition-colors cursor-pointer ${
+                indicators.rsi ? 'bg-purple-50 text-purple-800 border border-purple-200 font-semibold' : 'text-slate-500 hover:text-slate-900'
               }`}
             >
               RSI (14)
@@ -692,7 +713,7 @@ export const TradingChart: React.FC = () => {
           {/* Fullscreen toggle */}
           <button
             onClick={() => setIsFullscreen(!isFullscreen)}
-            className="p-1.5 text-slate-400 hover:text-slate-200 bg-slate-900 border border-slate-800 rounded transition-colors"
+            className="p-1.5 text-slate-600 hover:text-slate-900 bg-white border border-slate-200 rounded-lg transition-colors cursor-pointer"
             title={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
           >
             {isFullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
@@ -701,7 +722,7 @@ export const TradingChart: React.FC = () => {
       </div>
 
       {/* Main Canvas Area */}
-      <div className="relative flex-1 w-full h-full min-h-[380px] bg-[#0b0e14]">
+      <div className="relative flex-1 w-full h-full min-h-[380px] bg-white">
         <canvas
           ref={canvasRef}
           onMouseMove={handleMouseMove}
@@ -710,7 +731,7 @@ export const TradingChart: React.FC = () => {
         />
 
         {/* Deriv Stream Feed Watermark */}
-        <div className="absolute bottom-10 left-4 pointer-events-none opacity-40 select-none flex items-center gap-2 text-[10px] font-mono text-slate-500">
+        <div className="absolute bottom-10 left-4 pointer-events-none opacity-50 select-none flex items-center gap-2 text-[10px] font-mono text-slate-500">
           <span>DERIV WS FEED // {activeSymbol.symbol}</span>
           <span>·</span>
           <span>LATENCY &lt; 25ms</span>

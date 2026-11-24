@@ -18,6 +18,7 @@ export class DerivWebSocketService {
   private balanceSubscribers: Set<BalanceCallback> = new Set();
   private isConnected: boolean = false;
   private activeToken: string | null = null;
+  private isAuthorizedWithDeriv: boolean = false;
   private mockInterval: any = null;
   private connectionPromise: Promise<boolean> | null = null;
   private lastQuote: Record<string, number> = {
@@ -292,22 +293,50 @@ export class DerivWebSocketService {
     return this.generateSyntheticCandles(symbol, granularity, count);
   }
 
-  public async authorize(token: string): Promise<any> {
-    this.activeToken = token.trim();
-    if (!this.activeToken) {
+  public getAppId(): string {
+    return this.appId;
+  }
+
+  public getOAuthAuthorizeUrl(customAppId?: string): string {
+    const id = (customAppId || this.appId || '1089').trim() || '1089';
+    return `https://oauth.deriv.com/oauth2/authorize?app_id=${encodeURIComponent(id)}&l=EN`;
+  }
+
+  public async authorize(token: string, customAppId?: string): Promise<any> {
+    const cleanToken = token.trim();
+    if (!cleanToken) {
       throw new Error('Please enter a valid Deriv API Token');
+    }
+    this.activeToken = cleanToken;
+
+    const nextAppId = customAppId?.trim();
+    if (nextAppId && nextAppId !== this.appId) {
+      this.appId = nextAppId;
+      if (this.ws) {
+        try {
+          this.ws.close();
+        } catch {}
+        this.ws = null;
+      }
+      this.isConnected = false;
+    }
+
+    const isSampleToken = cleanToken === 'CR-NDERISKOOL-LIVE' || cleanToken.startsWith('CR-NDERISKOOL');
+    if (isSampleToken) {
+      this.isAuthorizedWithDeriv = false;
+      return this.createFallbackSession(cleanToken);
     }
 
     // Try to ensure websocket is open
-    const isReady = await this.ensureConnected(2500);
+    const isReady = await this.ensureConnected(3000);
 
     if (isReady && this.ws && this.ws.readyState === WebSocket.OPEN) {
       return new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
           this.ws?.removeEventListener('message', handler);
-          // If WS message times out, return verified fallback session
-          resolve(this.createFallbackSession(token));
-        }, 4000);
+          this.isAuthorizedWithDeriv = false;
+          reject(new Error('Timed out waiting for Deriv WebSocket authorization response.'));
+        }, 5000);
 
         const handler = (event: MessageEvent) => {
           try {
@@ -317,12 +346,17 @@ export class DerivWebSocketService {
               this.ws?.removeEventListener('message', handler);
 
               if (data.error) {
-                // Return clear error message from Deriv
+                this.isAuthorizedWithDeriv = false;
                 reject(new Error(data.error.message || 'Invalid Deriv API Token'));
               } else {
-                // Subscribe to live balance
-                this.sendWs({ balance: 1, subscribe: 1 });
-                resolve(data.authorize);
+                this.isAuthorizedWithDeriv = true;
+                // Subscribe to live balance updates across authorized accounts
+                this.sendWs({ balance: 1, account: 'all', subscribe: 1 });
+                resolve({
+                  ...data.authorize,
+                  isLiveVerified: true,
+                  appId: this.appId,
+                });
               }
             }
           } catch {
@@ -331,12 +365,12 @@ export class DerivWebSocketService {
         };
 
         this.ws?.addEventListener('message', handler);
-        this.sendWs({ authorize: token });
+        this.sendWs({ authorize: cleanToken });
       });
     }
 
-    // If network environment blocks external WebSocket, provide verified fallback session
-    return this.createFallbackSession(token);
+    this.isAuthorizedWithDeriv = false;
+    throw new Error('Unable to connect to Deriv WebSocket server (wss://ws.derivws.com). Check your internet connection and retry.');
   }
 
   private createFallbackSession(token: string) {
@@ -348,11 +382,22 @@ export class DerivWebSocketService {
     return {
       loginid: cleanLoginId,
       fullname: 'nderiskool',
-      email: 'nderiskool@deriv.trader',
+      email: 'kiragunderi28@gmail.com',
       currency: 'USD',
       balance: 5450.0,
       is_virtual: 0,
-      scopes: ['read', 'trade'],
+      isLiveVerified: false,
+      appId: this.appId,
+      scopes: ['read', 'trade', 'payments'],
+      account_list: [
+        {
+          loginid: cleanLoginId,
+          currency: 'USD',
+          is_virtual: 0,
+          account_type: 'trading',
+          landing_company_name: 'svg',
+        },
+      ],
     };
   }
 
@@ -427,6 +472,640 @@ export class DerivWebSocketService {
 
   public getConnectionStatus() {
     return this.isConnected;
+  }
+
+  public async getCashierUrl(action: 'deposit' | 'withdraw'): Promise<{ success: boolean; url: string; error?: string }> {
+    const defaultUrl =
+      action === 'deposit'
+        ? 'https://app.deriv.com/cashier/deposit'
+        : 'https://app.deriv.com/cashier/withdrawal';
+
+    await this.ensureConnected();
+
+    if (!this.activeToken) {
+      return { success: true, url: defaultUrl };
+    }
+
+    return new Promise((resolve) => {
+      const handler = (event: MessageEvent) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.msg_type === 'cashier') {
+            this.ws?.removeEventListener('message', handler);
+            if (data.cashier) {
+              const url = typeof data.cashier === 'string' ? data.cashier : data.cashier.url || defaultUrl;
+              resolve({ success: true, url });
+            } else if (data.error) {
+              resolve({ success: false, url: defaultUrl, error: data.error.message });
+            }
+          }
+        } catch {}
+      };
+
+      this.ws?.addEventListener('message', handler);
+      const sent = this.sendWs({
+        cashier: action,
+        provider: 'doughflow',
+      });
+
+      if (!sent) {
+        resolve({ success: true, url: defaultUrl });
+      }
+
+      // Safeguard timeout
+      setTimeout(() => {
+        this.ws?.removeEventListener('message', handler);
+        resolve({ success: true, url: defaultUrl });
+      }, 3500);
+    });
+  }
+
+  public async refreshBalance(): Promise<number | null> {
+    const ready = await this.ensureConnected(2500);
+    if (!ready || !this.activeToken || !this.isAuthorizedWithDeriv) return null;
+
+    return new Promise((resolve) => {
+      const handler = (event: MessageEvent) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.msg_type === 'balance' && data.balance) {
+            this.ws?.removeEventListener('message', handler);
+            resolve(Number(data.balance.balance));
+          }
+        } catch {}
+      };
+
+      this.ws?.addEventListener('message', handler);
+      const sent = this.sendWs({ balance: 1 });
+      if (!sent) {
+        this.ws?.removeEventListener('message', handler);
+        resolve(null);
+      }
+
+      setTimeout(() => {
+        this.ws?.removeEventListener('message', handler);
+        resolve(null);
+      }, 3000);
+    });
+  }
+
+  public async requestRealDeposit(): Promise<{
+    syncedWithDeriv: boolean;
+    cashierUrl: string;
+    error?: string;
+  }> {
+    const defaultUrl = 'https://app.deriv.com/cashier/deposit';
+    const ready = await this.ensureConnected(2500);
+    if (!ready || !this.isAuthorizedWithDeriv || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return {
+        syncedWithDeriv: false,
+        cashierUrl: defaultUrl,
+      };
+    }
+
+    const res = await this.getCashierUrl('deposit');
+    return {
+      syncedWithDeriv: res.success && !res.error,
+      cashierUrl: res.url || defaultUrl,
+      error: res.error,
+    };
+  }
+
+  public async transferBetweenAccounts(params: {
+    accountFrom: string;
+    accountTo: string;
+    amount: number;
+    currency?: string;
+  }): Promise<{
+    liveExecuted: boolean;
+    transactionId?: string;
+    error?: string;
+  }> {
+    const ready = await this.ensureConnected(2500);
+    if (!ready || !this.isAuthorizedWithDeriv || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return {
+        liveExecuted: false,
+        error: 'Live Deriv API token with Payments scope is required for automated account-to-account transfer.',
+      };
+    }
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = (res: { liveExecuted: boolean; transactionId?: string; error?: string }) => {
+        if (settled) return;
+        settled = true;
+        this.ws?.removeEventListener('message', handler);
+        resolve(res);
+      };
+
+      const handler = (event: MessageEvent) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.msg_type === 'transfer_between_accounts') {
+            if (data.error) {
+              done({ liveExecuted: false, error: data.error.message });
+            } else if (data.transfer_between_accounts === 1 || data.transaction_id) {
+              this.sendWs({ balance: 1 });
+              done({
+                liveExecuted: true,
+                transactionId: String(data.transaction_id || `DRV-XFER-${Date.now()}`),
+              });
+            }
+          }
+        } catch {}
+      };
+
+      this.ws?.addEventListener('message', handler);
+      const sent = this.sendWs({
+        transfer_between_accounts: 1,
+        account_from: params.accountFrom.trim(),
+        account_to: params.accountTo.trim(),
+        amount: Number(params.amount.toFixed(2)),
+        currency: params.currency || 'USD',
+      });
+
+      if (!sent) {
+        done({ liveExecuted: false, error: 'Deriv WebSocket disconnected while sending transfer.' });
+        return;
+      }
+
+      setTimeout(() => {
+        done({ liveExecuted: false, error: 'Deriv transfer_between_accounts request timed out.' });
+      }, 4500);
+    });
+  }
+
+  public async requestRealWithdrawal(params: {
+    amount: number;
+    currency?: string;
+    destination: string;
+    method: string;
+    token?: string;
+  }): Promise<{
+    success: boolean;
+    syncedWithDeriv: boolean;
+    cashierUrl: string;
+    serverBalance?: number;
+    message: string;
+  }> {
+    const defaultUrl = 'https://app.deriv.com/cashier/withdrawal';
+    if (params.token && !this.activeToken) {
+      this.activeToken = params.token;
+    }
+
+    const ready = await this.ensureConnected(2500);
+    const hasLiveApiToken = Boolean(
+      this.activeToken &&
+        this.activeToken !== 'CR-NDERISKOOL-LIVE' &&
+        !this.activeToken.startsWith('CR-NDERISKOOL')
+    );
+
+    if (!ready || !this.ws || this.ws.readyState !== WebSocket.OPEN || !hasLiveApiToken || !this.isAuthorizedWithDeriv) {
+      return {
+        success: true,
+        syncedWithDeriv: false,
+        cashierUrl: defaultUrl,
+        message: `Local terminal withdrawal recorded. Complete real payout via Deriv Official Cashier (${defaultUrl}) or Safaricom Daraja B2C.`,
+      };
+    }
+
+    // Authorize token if needed and request Deriv cashier withdrawal URL + balance sync
+    return new Promise((resolve) => {
+      let resolved = false;
+      let serverBalance: number | undefined;
+
+      const finish = (url: string, msg: string, synced: boolean) => {
+        if (resolved) return;
+        resolved = true;
+        this.ws?.removeEventListener('message', handler);
+        resolve({
+          success: true,
+          syncedWithDeriv: synced,
+          cashierUrl: url,
+          serverBalance,
+          message: msg,
+        });
+      };
+
+      const handler = (event: MessageEvent) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.msg_type === 'balance' && data.balance) {
+            serverBalance = Number(data.balance.balance);
+          }
+          if (data.msg_type === 'cashier') {
+            if (data.cashier) {
+              const url =
+                typeof data.cashier === 'string'
+                  ? data.cashier
+                  : data.cashier.url || defaultUrl;
+              finish(
+                url,
+                `Deriv Real Account cashier withdrawal initialized (${params.method}).`,
+                true
+              );
+            } else if (data.error) {
+              finish(
+                defaultUrl,
+                `Deriv Cashier note: ${data.error.message}. Complete withdrawal directly at app.deriv.com/cashier/withdrawal.`,
+                false
+              );
+            }
+          }
+        } catch {}
+      };
+
+      this.ws?.addEventListener('message', handler);
+      this.sendWs({ balance: 1 });
+      this.sendWs({
+        cashier: 'withdraw',
+        provider: 'doughflow',
+      });
+
+      setTimeout(() => {
+        finish(
+          defaultUrl,
+          `Deriv cashier request timed out. Open Deriv Official Cashier directly to complete payout.`,
+          false
+        );
+      }, 3000);
+    });
+  }
+
+  public async fetchDp2pAdverts(params: {
+    counterpartyType: 'buy' | 'sell';
+    amount?: number;
+  }): Promise<{
+    liveFromDeriv: boolean;
+    adverts: Array<{
+      id: string;
+      advertiserName: string;
+      rate: number;
+      minAmount: number;
+      maxAmount: number;
+      completionRate: number;
+      ordersCount: number;
+      releaseTimeMins: number;
+      paymentMethods: string[];
+      description: string;
+      isLiveAdvert: boolean;
+    }>;
+    error?: string;
+  }> {
+    const ready = await this.ensureConnected(2000);
+    if (!ready || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return { liveFromDeriv: false, adverts: [] };
+    }
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = (result: {
+        liveFromDeriv: boolean;
+        adverts: Array<{
+          id: string;
+          advertiserName: string;
+          rate: number;
+          minAmount: number;
+          maxAmount: number;
+          completionRate: number;
+          ordersCount: number;
+          releaseTimeMins: number;
+          paymentMethods: string[];
+          description: string;
+          isLiveAdvert: boolean;
+        }>;
+        error?: string;
+      }) => {
+        if (settled) return;
+        settled = true;
+        this.ws?.removeEventListener('message', handler);
+        resolve(result);
+      };
+
+      const handler = (event: MessageEvent) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.msg_type === 'p2p_advert_list') {
+            if (data.error) {
+              done({ liveFromDeriv: false, adverts: [], error: data.error.message });
+              return;
+            }
+            const rawList: any[] = data.p2p_advert_list?.list || [];
+            const mapped = rawList
+              .filter((ad) => Number(ad.effective_rate || ad.price || 0) > 0)
+              .slice(0, 8)
+              .map((ad) => ({
+                id: String(ad.id),
+                advertiserName: String(ad.advertiser_details?.name || 'Deriv P2P Peer'),
+                rate: Number(ad.effective_rate || ad.price || 129.5),
+                minAmount: Number(ad.min_order_amount_limit || 10),
+                maxAmount: Number(ad.max_order_amount_limit || 500),
+                completionRate: Number(ad.advertiser_details?.completed_orders_count ? 99.1 : 98.5),
+                ordersCount: Number(ad.advertiser_details?.total_completion_rate || ad.advertiser_details?.completed_orders_count || 120),
+                releaseTimeMins: Number(ad.order_expiry_period ? Math.round(ad.order_expiry_period / 60) : 15),
+                paymentMethods: Array.isArray(ad.payment_method_names) ? ad.payment_method_names : ['M-Pesa'],
+                description: String(ad.description || 'Instant M-Pesa Kenya settlement'),
+                isLiveAdvert: true,
+              }));
+            done({ liveFromDeriv: mapped.length > 0, adverts: mapped });
+          }
+        } catch {}
+      };
+
+      this.ws?.addEventListener('message', handler);
+      const sent = this.sendWs({
+        p2p_advert_list: 1,
+        counterparty_type: params.counterpartyType,
+        local_currency: 'KES',
+        ...(params.amount ? { amount: params.amount } : {}),
+      });
+
+      if (!sent) {
+        done({ liveFromDeriv: false, adverts: [] });
+        return;
+      }
+
+      setTimeout(() => {
+        done({ liveFromDeriv: false, adverts: [] });
+      }, 2800);
+    });
+  }
+
+  public async createDp2pOrder(params: {
+    advertId: string;
+    amount: number;
+    contactInfo: string;
+    paymentInfo: string;
+  }): Promise<{
+    liveCreated: boolean;
+    orderId?: string;
+    error?: string;
+  }> {
+    if (!this.isAuthorizedWithDeriv || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return {
+        liveCreated: false,
+        error: 'Live Deriv API authorization with payments scope is required for automated WS order creation.',
+      };
+    }
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = (res: { liveCreated: boolean; orderId?: string; error?: string }) => {
+        if (settled) return;
+        settled = true;
+        this.ws?.removeEventListener('message', handler);
+        resolve(res);
+      };
+
+      const handler = (event: MessageEvent) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.msg_type === 'p2p_order_create') {
+            if (data.error) {
+              done({ liveCreated: false, error: data.error.message });
+            } else if (data.p2p_order_create?.id) {
+              done({ liveCreated: true, orderId: String(data.p2p_order_create.id) });
+            }
+          }
+        } catch {}
+      };
+
+      this.ws?.addEventListener('message', handler);
+      this.sendWs({
+        p2p_order_create: 1,
+        advert_id: params.advertId,
+        amount: params.amount,
+        contact_info: params.contactInfo,
+        payment_info: params.paymentInfo,
+      });
+
+      setTimeout(() => {
+        done({ liveCreated: false, error: 'Deriv DP2P order request timed out.' });
+      }, 3500);
+    });
+  }
+
+  public async fetchDp2pOrderList(): Promise<{
+    liveFromDeriv: boolean;
+    orders: Array<{
+      id: string;
+      status: string;
+      amount: number;
+      type: string;
+      verificationCode?: string;
+    }>;
+  }> {
+    if (!this.isAuthorizedWithDeriv || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return { liveFromDeriv: false, orders: [] };
+    }
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = (res: {
+        liveFromDeriv: boolean;
+        orders: Array<{
+          id: string;
+          status: string;
+          amount: number;
+          type: string;
+          verificationCode?: string;
+        }>;
+      }) => {
+        if (settled) return;
+        settled = true;
+        this.ws?.removeEventListener('message', handler);
+        resolve(res);
+      };
+
+      const handler = (event: MessageEvent) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.msg_type === 'p2p_order_list') {
+            if (data.error) {
+              done({ liveFromDeriv: false, orders: [] });
+              return;
+            }
+            const rawList: any[] = data.p2p_order_list?.list || [];
+            const mapped = rawList.map((ord) => ({
+              id: String(ord.id || ''),
+              status: String(ord.status || 'pending').toLowerCase(),
+              amount: Number(ord.amount || 0),
+              type: String(ord.type || 'buy').toLowerCase(),
+              verificationCode: ord.verification_code ? String(ord.verification_code) : undefined,
+            }));
+            done({ liveFromDeriv: true, orders: mapped });
+          }
+        } catch {}
+      };
+
+      this.ws?.addEventListener('message', handler);
+      const sent = this.sendWs({
+        p2p_order_list: 1,
+        limit: 25,
+      });
+
+      if (!sent) {
+        done({ liveFromDeriv: false, orders: [] });
+        return;
+      }
+
+      setTimeout(() => {
+        done({ liveFromDeriv: false, orders: [] });
+      }, 2800);
+    });
+  }
+
+  public async fetchKenyanPaymentAgents(): Promise<{
+    liveFromDeriv: boolean;
+    agents: Array<{
+      loginId: string;
+      name: string;
+      minWithdrawal: number;
+      maxWithdrawal: number;
+      withdrawalCommission: number;
+      depositCommission: number;
+      telephone: string;
+      url: string;
+      summary: string;
+      isLiveAgent: boolean;
+    }>;
+  }> {
+    const ready = await this.ensureConnected(2000);
+    if (!ready || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return { liveFromDeriv: false, agents: [] };
+    }
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = (res: {
+        liveFromDeriv: boolean;
+        agents: Array<{
+          loginId: string;
+          name: string;
+          minWithdrawal: number;
+          maxWithdrawal: number;
+          withdrawalCommission: number;
+          depositCommission: number;
+          telephone: string;
+          url: string;
+          summary: string;
+          isLiveAgent: boolean;
+        }>;
+      }) => {
+        if (settled) return;
+        settled = true;
+        this.ws?.removeEventListener('message', handler);
+        resolve(res);
+      };
+
+      const handler = (event: MessageEvent) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.msg_type === 'paymentagent_list') {
+            if (data.error) {
+              done({ liveFromDeriv: false, agents: [] });
+              return;
+            }
+            const rawList: any[] = data.paymentagent_list?.list || [];
+            const mapped = rawList.slice(0, 10).map((ag) => ({
+              loginId: String(ag.paymentagent_loginid || ''),
+              name: String(ag.name || 'Deriv Payment Agent'),
+              minWithdrawal: Number(ag.min_withdrawal || 10),
+              maxWithdrawal: Number(ag.max_withdrawal || 2000),
+              withdrawalCommission: Number(ag.withdrawal_commission || 0),
+              depositCommission: Number(ag.deposit_commission || 0),
+              telephone: String(ag.telephone || ''),
+              url: String(ag.url || 'https://app.deriv.com/cashier/payment-agent'),
+              summary: String(ag.summary || 'Authorized Deriv Kenya M-Pesa Payment Agent'),
+              isLiveAgent: true,
+            }));
+            done({ liveFromDeriv: mapped.length > 0, agents: mapped });
+          }
+        } catch {}
+      };
+
+      this.ws?.addEventListener('message', handler);
+      const sent = this.sendWs({
+        paymentagent_list: 'ke',
+      });
+
+      if (!sent) {
+        done({ liveFromDeriv: false, agents: [] });
+        return;
+      }
+
+      setTimeout(() => {
+        done({ liveFromDeriv: false, agents: [] });
+      }, 2800);
+    });
+  }
+
+  public async requestPaymentAgentWithdrawal(params: {
+    paymentagentLoginid: string;
+    amount: number;
+    currency?: string;
+    verificationCode: string;
+    description?: string;
+    token?: string;
+  }): Promise<{
+    liveExecuted: boolean;
+    transactionId?: string;
+    error?: string;
+  }> {
+    if (!params.verificationCode.trim()) {
+      return {
+        liveExecuted: false,
+        error: 'Deriv email verification code is required for automated Payment Agent API withdrawal.',
+      };
+    }
+
+    const ready = await this.ensureConnected(2000);
+    if (!ready || !this.isAuthorizedWithDeriv || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return {
+        liveExecuted: false,
+        error: 'Live Deriv API authorization (payments scope) is required for automated paymentagent_withdraw.',
+      };
+    }
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = (res: { liveExecuted: boolean; transactionId?: string; error?: string }) => {
+        if (settled) return;
+        settled = true;
+        this.ws?.removeEventListener('message', handler);
+        resolve(res);
+      };
+
+      const handler = (event: MessageEvent) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.msg_type === 'paymentagent_withdraw') {
+            if (data.error) {
+              done({ liveExecuted: false, error: data.error.message });
+            } else if (data.paymentagent_withdraw === 1 || data.transaction_id) {
+              done({
+                liveExecuted: true,
+                transactionId: String(data.transaction_id || `PA-${Date.now()}`),
+              });
+            }
+          }
+        } catch {}
+      };
+
+      this.ws?.addEventListener('message', handler);
+      this.sendWs({
+        paymentagent_withdraw: 1,
+        paymentagent_loginid: params.paymentagentLoginid,
+        currency: params.currency || 'USD',
+        amount: Number(params.amount.toFixed(2)),
+        verification_code: params.verificationCode.trim(),
+        description: params.description || 'D Cash App Real Withdrawal',
+      });
+
+      setTimeout(() => {
+        done({ liveExecuted: false, error: 'Deriv paymentagent_withdraw request timed out.' });
+      }, 3500);
+    });
   }
 }
 
