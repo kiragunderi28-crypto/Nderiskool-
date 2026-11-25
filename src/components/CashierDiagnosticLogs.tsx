@@ -73,6 +73,7 @@ interface BackendDiagnosticsHealth {
     withdrawUrl?: string;
     transferUrl: string;
     inquiryUrl?: string;
+    ipnUrl?: string;
     callbackUrl: string;
     confirmUrl: string;
   };
@@ -118,6 +119,7 @@ interface BackendDiagnosticsHealth {
     payheroDepositUrl?: string;
     payheroWithdrawUrl?: string;
     payheroTransferUrl?: string;
+    kcbIpnUrl?: string;
     kcbCallbackUrl?: string;
     kcbDepositUrl?: string;
     kcbWithdrawUrl?: string;
@@ -841,8 +843,13 @@ export const CashierDiagnosticLogs: React.FC = () => {
       url: health?.callbackUrls?.kcbTransferUrl || health?.kcbUrls?.transferUrl || '/api/kcb/transfer',
     },
     {
+      key: 'kcbIpn',
+      label: 'KCB Buni IPN URL',
+      url: health?.callbackUrls?.kcbIpnUrl || health?.kcbUrls?.ipnUrl || '/api/kcb/ipn',
+    },
+    {
       key: 'kcbCallback',
-      label: 'KCB Buni IPN Callback URL',
+      label: 'KCB Buni Callback URL',
       url: health?.callbackUrls?.kcbCallbackUrl || health?.kcbUrls?.callbackUrl || '/api/kcb/callback',
     },
   ];

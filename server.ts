@@ -509,12 +509,25 @@ function deriveSecurityCredential(
 }
 
 function cleanEnvVar(val?: string): string {
-  const trimmed = (val || '').trim();
+  let trimmed = (val || '').trim();
+  if (!trimmed) return '';
   if (
     (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
     (trimmed.startsWith("'") && trimmed.endsWith("'"))
   ) {
-    return trimmed.slice(1, -1).trim();
+    trimmed = trimmed.slice(1, -1).trim();
+  }
+  if (!trimmed.includes('\n')) {
+    if (/^["']/.test(trimmed) && !/["']$/.test(trimmed)) {
+      trimmed = trimmed.slice(1).trim();
+    }
+    if (/["'],$/.test(trimmed) && !trimmed.startsWith('"') && !trimmed.startsWith("'")) {
+      trimmed = trimmed.slice(0, -2).trim();
+    } else if (/["']$/.test(trimmed) && !trimmed.startsWith('"') && !trimmed.startsWith("'")) {
+      trimmed = trimmed.slice(0, -1).trim();
+    } else if (/,$/.test(trimmed) && /^[A-Za-z0-9:/._-]+,$/.test(trimmed)) {
+      trimmed = trimmed.slice(0, -1).trim();
+    }
   }
   return trimmed;
 }
@@ -558,6 +571,8 @@ const ALLOWED_NON_SECRET_OVERRIDES = new Set([
   'MPESA_CALLBACK_BASE_URL',
   'MPESA_ENV',
   'MPESA_SHORTCODE',
+  'MPESA_STORE_NUMBER',
+  'MPESA_TILL_NUMBER',
   'MPESA_TRANSACTION_TYPE',
   'MPESA_B2C_SHORTCODE',
   'MPESA_B2C_COMMAND_ID',
@@ -627,6 +642,20 @@ function saveRuntimeCallbackBaseUrl(nextUrl: string) {
   }
 }
 
+function saveRuntimeNonSecretOverrides(updates: Record<string, string | null>) {
+  for (const [k, v] of Object.entries(updates)) {
+    if (!ALLOWED_NON_SECRET_OVERRIDES.has(k)) continue;
+    const cleanVal = typeof v === 'string' ? v.trim() : '';
+    if (cleanVal) {
+      runtimeNonSecretOverrides[k] = cleanVal;
+      process.env[k] = cleanVal;
+    } else {
+      delete runtimeNonSecretOverrides[k];
+    }
+  }
+  saveRuntimeCallbackBaseUrl(runtimeMpesaCallbackBaseUrl);
+}
+
 const VALID_B2C_COMMANDS = new Set(['BusinessPayment', 'SalaryPayment', 'PromotionPayment']);
 const VALID_B2B_COMMANDS = new Set([
   'BusinessPayBill',
@@ -648,21 +677,66 @@ function getDarajaConfig(options?: { forceProduction?: boolean }) {
   const baseUrl = env === 'production' ? 'https://api.safaricom.co.ke' : 'https://sandbox.safaricom.co.ke';
   const consumerKey = cleanEnvVar(process.env.MPESA_CONSUMER_KEY);
   const consumerSecret = cleanEnvVar(process.env.MPESA_CONSUMER_SECRET);
-  const shortcode = cleanEnvVar(process.env.MPESA_SHORTCODE);
-  const stkTransactionType =
-    cleanEnvVar(process.env.MPESA_TRANSACTION_TYPE) === 'CustomerBuyGoodsOnline'
-      ? 'CustomerBuyGoodsOnline'
-      : 'CustomerPayBillOnline';
-  const stkPartyB = cleanEnvVar(process.env.MPESA_TILL_NUMBER) || shortcode;
+  const isValidDarajaShortcode = (val: string) =>
+    /^\d{5,8}$/.test(val) && !/^(0|254)(7|1)\d{8}$/.test(val);
+
+  const rawShortcode = cleanEnvVar(process.env.MPESA_SHORTCODE);
+  const rawStoreNumber = cleanEnvVar(process.env.MPESA_STORE_NUMBER);
+  const rawTillNumber = cleanEnvVar(process.env.MPESA_TILL_NUMBER);
+  const rawKcbPaybill = cleanEnvVar(process.env.KCB_PAYBILL);
   const rawB2cShortcode = cleanEnvVar(process.env.MPESA_B2C_SHORTCODE);
-  const isInvalidB2cShortcode = Boolean(
-    rawB2cShortcode && (/^(0|254)(7|1)\d{8}$/.test(rawB2cShortcode) || rawB2cShortcode.length < 5)
-  );
-  const b2cShortcode = rawB2cShortcode && !isInvalidB2cShortcode ? rawB2cShortcode : shortcode;
   const rawB2bShortcode = cleanEnvVar(process.env.MPESA_B2B_SHORTCODE);
-  const isB2bPhoneInsteadOfShortcode = Boolean(
-    rawB2bShortcode && (/^(0|254)(7|1)\d{8}$/.test(rawB2bShortcode) || rawB2bShortcode.length < 5)
-  );
+  const rawTxType = cleanEnvVar(process.env.MPESA_TRANSACTION_TYPE);
+
+  const defaultStoreNumber = '1470353';
+  const defaultTillNumber = '1953263';
+
+  const storeNumber =
+    (isValidDarajaShortcode(rawStoreNumber) ? rawStoreNumber : '') ||
+    (isValidDarajaShortcode(rawShortcode) ? rawShortcode : '') ||
+    (isValidDarajaShortcode(rawB2cShortcode) ? rawB2cShortcode : '') ||
+    defaultStoreNumber;
+
+  const tillNumber =
+    runtimeNonSecretOverrides.MPESA_TILL_NUMBER ||
+    (isValidDarajaShortcode(rawTillNumber) && rawTillNumber !== '284076' ? rawTillNumber : '') ||
+    defaultTillNumber;
+
+  const stkTransactionType: 'CustomerBuyGoodsOnline' | 'CustomerPayBillOnline' =
+    runtimeNonSecretOverrides.MPESA_TRANSACTION_TYPE === 'CustomerPayBillOnline'
+      ? 'CustomerPayBillOnline'
+      : runtimeNonSecretOverrides.MPESA_TRANSACTION_TYPE === 'CustomerBuyGoodsOnline'
+      ? 'CustomerBuyGoodsOnline'
+      : rawTxType === 'CustomerBuyGoodsOnline'
+      ? 'CustomerBuyGoodsOnline'
+      : rawTxType === 'CustomerPayBillOnline' && isValidDarajaShortcode(rawShortcode)
+      ? 'CustomerPayBillOnline'
+      : 'CustomerBuyGoodsOnline';
+
+  const fallbackValidShortcode =
+    stkTransactionType === 'CustomerBuyGoodsOnline'
+      ? storeNumber ||
+        (isValidDarajaShortcode(rawB2cShortcode) ? rawB2cShortcode : '') ||
+        (isValidDarajaShortcode(rawKcbPaybill) && rawKcbPaybill !== '522522' ? rawKcbPaybill : '')
+      : (isValidDarajaShortcode(rawKcbPaybill) && rawKcbPaybill !== '522522' ? rawKcbPaybill : '') ||
+        storeNumber ||
+        (isValidDarajaShortcode(rawB2cShortcode) ? rawB2cShortcode : '');
+
+  const invalidShortcodeInEnv = Boolean(rawShortcode && !isValidDarajaShortcode(rawShortcode));
+  const shortcode =
+    runtimeNonSecretOverrides.MPESA_SHORTCODE && isValidDarajaShortcode(runtimeNonSecretOverrides.MPESA_SHORTCODE)
+      ? runtimeNonSecretOverrides.MPESA_SHORTCODE
+      : isValidDarajaShortcode(rawShortcode)
+      ? rawShortcode
+      : fallbackValidShortcode || rawShortcode;
+
+  const stkPartyB =
+    stkTransactionType === 'CustomerBuyGoodsOnline'
+      ? tillNumber || shortcode
+      : shortcode;
+  const isInvalidB2cShortcode = Boolean(rawB2cShortcode && !isValidDarajaShortcode(rawB2cShortcode));
+  const b2cShortcode = rawB2cShortcode && !isInvalidB2cShortcode ? rawB2cShortcode : storeNumber || shortcode;
+  const isB2bPhoneInsteadOfShortcode = Boolean(rawB2bShortcode && !isValidDarajaShortcode(rawB2bShortcode));
   const b2bShortcode = rawB2bShortcode && !isB2bPhoneInsteadOfShortcode ? rawB2bShortcode : b2cShortcode || shortcode;
   const passkey = cleanEnvVar(process.env.MPESA_PASSKEY);
   const initiatorName = cleanEnvVar(process.env.MPESA_INITIATOR_NAME);
@@ -689,6 +763,18 @@ function getDarajaConfig(options?: { forceProduction?: boolean }) {
       : 'REQUEST_HOST';
 
   const warnings: string[] = [];
+  if (invalidShortcodeInEnv) {
+    warnings.push(
+      fallbackValidShortcode
+        ? `MPESA_SHORTCODE ("${rawShortcode}") is not a 5–8 digit Daraja Paybill/Till; auto-resolved to saved Paybill/Shortcode "${shortcode}".`
+        : `MPESA_SHORTCODE ("${rawShortcode}") is not a valid 5–8 digit Daraja Paybill/Till shortcode.`
+    );
+  }
+  if (rawTillNumber && !isValidDarajaShortcode(rawTillNumber)) {
+    warnings.push(
+      `MPESA_TILL_NUMBER ("${rawTillNumber}") looks like a +254/phone MSISDN instead of a 5–8 digit Safaricom Buy Goods Till shortcode; Daraja CustomerBuyGoodsOnline requires the 5–8 digit Till/Store number, while MSISDN numbers work for B2C/P2P payouts.`
+    );
+  }
   if (invalidEnvCallbackBaseUrl && !runtimeMpesaCallbackBaseUrl) {
     warnings.push(
       `MPESA_CALLBACK_BASE_URL in Secrets ("${rawEnvCallbackBaseUrl}") is not a valid https:// domain URL. Save a valid public https:// callback base URL below or update MPESA_CALLBACK_BASE_URL in Secrets.`
@@ -772,6 +858,8 @@ function getDarajaConfig(options?: { forceProduction?: boolean }) {
     consumerKey,
     consumerSecret,
     shortcode,
+    storeNumber,
+    tillNumber,
     stkTransactionType,
     stkPartyB,
     b2cShortcode,
@@ -1114,6 +1202,9 @@ async function startServer() {
       c2bRegisterEndpoint: `${cfg.baseUrl}/mpesa/c2b/v2/registerurl`,
       billManagerBaseUrl: `${cfg.baseUrl}/v1/billmanager-invoice/v1/billmanager-invoice`,
       shortcode: cfg.shortcode || undefined,
+      storeNumber: cfg.storeNumber || undefined,
+      tillNumber: cfg.tillNumber || undefined,
+      stkPartyB: cfg.stkPartyB || undefined,
       b2cShortcode: withdrawalCfg.b2cShortcode || undefined,
       b2bShortcode: withdrawalCfg.b2bShortcode || undefined,
       stkTransactionType: cfg.stkTransactionType,
@@ -1477,19 +1568,29 @@ async function startServer() {
     }
 
     try {
+      const requestedTxType =
+        req.body?.transactionType === 'CustomerPayBillOnline'
+          ? 'CustomerPayBillOnline'
+          : req.body?.transactionType === 'CustomerBuyGoodsOnline'
+          ? 'CustomerBuyGoodsOnline'
+          : cfg.stkTransactionType;
+      const reqStore = cleanEnvVar(String(req.body?.storeNumber || ''));
+      const reqTill = cleanEnvVar(String(req.body?.tillNumber || ''));
+      const businessShortCode = /^\d{5,8}$/.test(reqStore) ? reqStore : cfg.shortcode;
+      const partyB =
+        requestedTxType === 'CustomerBuyGoodsOnline'
+          ? /^\d{5,8}$/.test(reqTill)
+            ? reqTill
+            : cfg.tillNumber || cfg.stkPartyB
+          : businessShortCode;
+
       const timestamp = getDarajaTimestamp();
-      const password = Buffer.from(`${cfg.shortcode}${cfg.passkey}${timestamp}`).toString('base64');
+      const password = Buffer.from(`${businessShortCode}${cfg.passkey}${timestamp}`).toString('base64');
       const publicBase = resolvePublicBaseUrl(req, cfg.appUrl, cfg.callbackBaseUrl);
       const callbackUrl = publicBase ? `${publicBase}/api/mpesa/callback` : 'https://example.com/api/mpesa/callback';
 
-      const requestedTxType =
-        req.body?.transactionType === 'CustomerBuyGoodsOnline'
-          ? 'CustomerBuyGoodsOnline'
-          : cfg.stkTransactionType;
-      const partyB = requestedTxType === 'CustomerBuyGoodsOnline' ? cfg.stkPartyB : cfg.shortcode;
-
       const { res: stkRes, data: stkData } = await darajaPostJson(cfg, `${cfg.baseUrl}/mpesa/stkpush/v1/processrequest`, {
-        BusinessShortCode: cfg.shortcode,
+        BusinessShortCode: businessShortCode,
         Password: password,
         Timestamp: timestamp,
         TransactionType: requestedTxType,
@@ -3686,6 +3787,20 @@ async function startServer() {
         formatted: '+254 793 950 512',
         carrier: 'Safaricom Kenya (M-Pesa)',
         label: 'Primary Safaricom M-Pesa Wallet',
+        sourceAccountId: 'CR-NDERISKOOL',
+        verifiedAt: Date.now(),
+        status: 'VERIFIED',
+        b2cLiveReady: getDarajaConfig().b2cConfigured,
+      },
+    ],
+    [
+      '0183974572',
+      {
+        phone: '0183974572',
+        msisdn: '254183974572',
+        formatted: '+254 183 974 572',
+        carrier: 'Safaricom Kenya (M-Pesa Till Line)',
+        label: 'M-Pesa Till / Merchant Receiving Line (+254183974572)',
         sourceAccountId: 'CR-NDERISKOOL',
         verifiedAt: Date.now(),
         status: 'VERIFIED',
@@ -6118,6 +6233,7 @@ async function startServer() {
         withdrawUrl: baseSelf ? `${baseSelf}/api/kcb/withdraw` : '/api/kcb/withdraw',
         transferUrl: baseSelf ? `${baseSelf}/api/kcb/transfer` : '/api/kcb/transfer',
         inquiryUrl: baseSelf ? `${baseSelf}/api/kcb/account-inquiry` : '/api/kcb/account-inquiry',
+        ipnUrl: baseSelf ? `${baseSelf}/api/kcb/ipn` : '/api/kcb/ipn',
         callbackUrl: baseSelf ? `${baseSelf}/api/kcb/callback` : '/api/kcb/callback',
         confirmUrl: baseSelf ? `${baseSelf}/api/kcb/confirm` : '/api/kcb/confirm',
       },
@@ -6134,6 +6250,13 @@ async function startServer() {
     if (!kcfg.consumerKey || !kcfg.consumerSecret) {
       return { ok: false, error: 'KCB_CONSUMER_KEY and KCB_CONSUMER_SECRET are required for KCB Buni OAuth.' };
     }
+    if (kcfg.consumerKey.includes('*') || kcfg.consumerSecret.includes('*')) {
+      return {
+        ok: false,
+        error:
+          'KCB_CONSUMER_KEY or KCB_CONSUMER_SECRET contains masked "*" characters — click Show/Copy in KCB Buni Portal and update Secrets.',
+      };
+    }
     const cacheKey = `${kcfg.buniBaseUrl}|${kcfg.consumerKey.slice(0, 8)}`;
     if (!forceRefresh && kcbCachedToken && kcbCachedToken.cacheKey === cacheKey && Date.now() < kcbCachedToken.expiresAt - 60000) {
       return {
@@ -6149,29 +6272,36 @@ async function startServer() {
     const explicitSandbox = cleanEnvVar(process.env.KCB_BUNI_ENV).toLowerCase() === 'sandbox';
     const explicitProd = cleanEnvVar(process.env.KCB_BUNI_ENV).toLowerCase() === 'production';
 
-    const candidates: Array<{ tokenUrl: string; apiBase: string }> = [
-      { tokenUrl: `${kcfg.buniBaseUrl}/token?grant_type=client_credentials`, apiBase: kcfg.buniBaseUrl },
+    const candidates: Array<{ label: string; tokenUrl: string; apiBase: string }> = [
+      {
+        label: kcfg.buniBaseUrl.includes('uat.') ? 'Sandbox (uat.buni.kcbgroup.com)' : 'Production (api.buni.kcbgroup.com)',
+        tokenUrl: `${kcfg.buniBaseUrl}/token`,
+        apiBase: kcfg.buniBaseUrl,
+      },
     ];
     if (!explicitSandbox) {
       if (kcfg.buniBaseUrl !== 'https://api.buni.kcbgroup.com') {
         candidates.push({
-          tokenUrl: 'https://api.buni.kcbgroup.com/token?grant_type=client_credentials',
+          label: 'Production (api.buni.kcbgroup.com)',
+          tokenUrl: 'https://api.buni.kcbgroup.com/token',
           apiBase: 'https://api.buni.kcbgroup.com',
         });
       }
       candidates.push({
+        label: 'Accounts OAuth (accounts.buni.kcbgroup.com)',
         tokenUrl: 'https://accounts.buni.kcbgroup.com/oauth2/token',
         apiBase: kcfg.buniBaseUrl === 'https://uat.buni.kcbgroup.com' ? 'https://api.buni.kcbgroup.com' : kcfg.buniBaseUrl,
       });
     }
     if (!explicitProd && kcfg.buniBaseUrl !== 'https://uat.buni.kcbgroup.com') {
       candidates.push({
-        tokenUrl: 'https://uat.buni.kcbgroup.com/token?grant_type=client_credentials',
+        label: 'Sandbox (uat.buni.kcbgroup.com)',
+        tokenUrl: 'https://uat.buni.kcbgroup.com/token',
         apiBase: 'https://uat.buni.kcbgroup.com',
       });
     }
 
-    let lastError = 'Unable to reach KCB Buni OAuth endpoint.';
+    const attemptErrors: string[] = [];
     for (const candidate of candidates) {
       try {
         const res = await fetchTextWithTimeout(
@@ -6212,14 +6342,18 @@ async function startServer() {
             cached: false,
           };
         }
-        lastError = String(
-          data.error_description || data.error || data.message || `KCB Buni OAuth HTTP ${res.status} (${candidate.tokenUrl})`
+        const errPart = String(
+          data.error_description || data.error || data.message || `HTTP ${res.status}`
         );
+        attemptErrors.push(`${candidate.label}: ${errPart}`);
       } catch (err: any) {
-        lastError = err?.message || `Unable to reach ${candidate.tokenUrl}`;
+        attemptErrors.push(`${candidate.label}: ${err?.message || 'unreachable'}`);
       }
     }
-    return { ok: false, error: lastError };
+    return {
+      ok: false,
+      error: attemptErrors.length > 0 ? attemptErrors.join(' | ') : 'Unable to reach KCB Buni OAuth endpoint.',
+    };
   };
 
   const applyKcbVerificationPayload = (
@@ -6231,6 +6365,7 @@ async function startServer() {
       receipt?: string;
       message?: string;
       amount?: number;
+      isIpnPush?: boolean;
       source: 'KCB_CALLBACK' | 'KCB_BUNI_API';
     }
   ): { updated: boolean; validConfirmation: boolean; error?: string } => {
@@ -6238,17 +6373,30 @@ async function startServer() {
     const receipt = params.receipt ? String(params.receipt).trim() : undefined;
     const rcStr = params.resultCode !== undefined && params.resultCode !== null ? String(params.resultCode).trim() : '';
     const rcNum = rcStr !== '' && !Number.isNaN(Number(rcStr)) ? Number(rcStr) : undefined;
+    const isPing = st === 'PING_ACK' || Boolean(receipt && receipt.toUpperCase().startsWith('PING'));
 
     const isRejected =
-      params.successFlag === false ||
-      ['FAILED', 'FAILURE', 'REJECTED', 'CANCELLED', 'CANCELED', 'DECLINED', 'REVERSED', 'ERROR'].includes(st) ||
-      (rcNum !== undefined && rcNum !== 0 && rcStr !== '200');
+      !isPing &&
+      (params.successFlag === false ||
+        ['FAILED', 'FAILURE', 'REJECTED', 'CANCELLED', 'CANCELED', 'DECLINED', 'REVERSED', 'ERROR'].includes(st) ||
+        (rcNum !== undefined && rcNum !== 0 && rcStr !== '200'));
+    const hasIpnSettlementSignal =
+      !isPing &&
+      Boolean(params.isIpnPush) &&
+      !st &&
+      !rcStr &&
+      Boolean(receipt && receipt.length >= 4) &&
+      params.amount !== undefined &&
+      !Number.isNaN(params.amount) &&
+      params.amount > 0;
     const isCompleted =
+      !isPing &&
       !isRejected &&
       (['SUCCESS', 'SUCCEEDED', 'COMPLETED', 'COMPLETE', 'CONFIRMED', 'SETTLED', 'PAID', 'PROCESSED'].includes(st) ||
         params.successFlag === true ||
         rcNum === 0 ||
-        rcStr === '200');
+        rcStr === '200' ||
+        hasIpnSettlementSignal);
 
     if (isRejected) {
       tx.status = 'REJECTED';
@@ -6382,9 +6530,72 @@ async function startServer() {
     const kcfg = getKcbConfig(req);
     const forceRefresh = req.body?.refresh !== false;
     const tokenRes = await fetchKcbBuniAccessToken(kcfg, forceRefresh);
+
+    let diagnosticHint = '';
+    let matchedAlternate: string | null = null;
+    let sandboxProbeError = '';
+    if (!tokenRes.ok && kcfg.consumerKey && kcfg.consumerSecret) {
+      const probeToken = async (url: string, key: string, secret: string) => {
+        try {
+          const authStr = Buffer.from(`${key}:${secret}`).toString('base64');
+          const r = await fetchTextWithTimeout(
+            url,
+            {
+              method: 'POST',
+              headers: {
+                Authorization: `Basic ${authStr}`,
+                'Content-Type': 'application/x-www-form-urlencoded',
+                Accept: 'application/json',
+              },
+              body: 'grant_type=client_credentials',
+            },
+            5000
+          );
+          let j: Record<string, any> = {};
+          try {
+            j = r.text.trim() ? (JSON.parse(r.text) as Record<string, any>) : {};
+          } catch {}
+          return {
+            ok: Boolean(r.ok && j.access_token),
+            err: String(j.error_description || j.error || j.message || `HTTP ${r.status}`),
+          };
+        } catch (e: any) {
+          return { ok: false, err: e?.message || 'unreachable' };
+        }
+      };
+
+      const sandboxProbe = await probeToken('https://uat.buni.kcbgroup.com/token', kcfg.consumerKey, kcfg.consumerSecret);
+      sandboxProbeError = sandboxProbe.err;
+      if (sandboxProbe.ok) {
+        matchedAlternate = 'SANDBOX';
+        diagnosticHint =
+          'Your saved KCB_CONSUMER_KEY & KCB_CONSUMER_SECRET are VALID on KCB Buni SANDBOX (uat.buni.kcbgroup.com)! Set KCB_BUNI_ENV="sandbox" and KCB_BUNI_BASE_URL="https://uat.buni.kcbgroup.com" in Secrets.';
+      } else {
+        const swappedProd = await probeToken('https://api.buni.kcbgroup.com/token', kcfg.consumerSecret, kcfg.consumerKey);
+        if (swappedProd.ok) {
+          matchedAlternate = 'SWAPPED_PRODUCTION';
+          diagnosticHint =
+            'KCB_CONSUMER_KEY and KCB_CONSUMER_SECRET appear SWAPPED — reversing them succeeded on Production (api.buni.kcbgroup.com)!';
+        } else {
+          const swappedUat = await probeToken('https://uat.buni.kcbgroup.com/token', kcfg.consumerSecret, kcfg.consumerKey);
+          if (swappedUat.ok) {
+            matchedAlternate = 'SWAPPED_SANDBOX';
+            diagnosticHint =
+              'KCB_CONSUMER_KEY and KCB_CONSUMER_SECRET appear SWAPPED and belong to Sandbox (uat.buni.kcbgroup.com)!';
+          }
+        }
+      }
+    }
+
+    const baseErr = tokenRes.error || `KCB Buni OAuth failed at ${kcfg.buniBaseUrl}/token`;
+    const fullError = tokenRes.ok
+      ? undefined
+      : [baseErr, sandboxProbeError ? `Sandbox (uat.buni.kcbgroup.com): ${sandboxProbeError}` : '', diagnosticHint]
+          .filter(Boolean)
+          .join(' | ');
     const summary = tokenRes.ok
-      ? `KCB Buni OAuth2 token issued cleanly from ${kcfg.buniBaseUrl}/token (${kcfg.env}).`
-      : tokenRes.error || `KCB Buni OAuth failed at ${kcfg.buniBaseUrl}/token`;
+      ? `KCB Buni OAuth2 token issued cleanly from ${tokenRes.baseUrl || kcfg.buniBaseUrl}/token (${kcfg.env}).`
+      : fullError || baseErr;
 
     recordCashierDiagnostic({
       channel: 'KCB_BANK',
@@ -6396,9 +6607,12 @@ async function startServer() {
       responsePayload: {
         ok: tokenRes.ok,
         environment: kcfg.env,
-        buniBaseUrl: kcfg.buniBaseUrl,
+        buniBaseUrl: tokenRes.baseUrl || kcfg.buniBaseUrl,
         expiresAt: tokenRes.expiresAt,
         cached: tokenRes.cached,
+        matchedAlternate,
+        keyLength: kcfg.consumerKey.length,
+        secretLength: kcfg.consumerSecret.length,
       },
     });
 
@@ -6406,13 +6620,16 @@ async function startServer() {
       ok: tokenRes.ok,
       authenticated: tokenRes.ok,
       environment: kcfg.env,
-      buniBaseUrl: kcfg.buniBaseUrl,
+      buniBaseUrl: tokenRes.baseUrl || kcfg.buniBaseUrl,
       buniConfigured: kcfg.buniConfigured,
       expiresAt: tokenRes.expiresAt,
       cached: tokenRes.cached,
+      matchedAlternate,
+      keyLength: kcfg.consumerKey.length,
+      secretLength: kcfg.consumerSecret.length,
       apiWarning: kcfg.apiWarning,
       message: summary,
-      error: tokenRes.ok ? undefined : tokenRes.error,
+      error: fullError,
     });
   });
 
@@ -6759,10 +6976,10 @@ async function startServer() {
 
     // DEPOSIT BRANCH (Collections into Wallet / Deriv Real via KCB Buni STK / Daraja STK Paybill 522522 / KCB iBank Deposit Bridge)
     if (action === 'DEPOSIT') {
-      // 1A. KCB Buni M-Pesa / Vooma Express Collection when Buni configured and Kenyan phone provided
+      // 1A. KCB Buni M-Pesa / Vooma Express Collection when Buni OAuth ready and Kenyan phone provided
       if (
         preferredRoute !== 'bridge' &&
-        kcfg.buniConfigured &&
+        kcfg.buniOauthReady &&
         parsedPhone &&
         (preferredRoute === 'buni' || preferredRoute === 'auto')
       ) {
@@ -6776,7 +6993,9 @@ async function startServer() {
               invoiceNumber: `${kcfg.kcbPaybill}-${targetAccountDisplay}`.slice(0, 24),
               sharedShortCode: true,
               orgShortCode: kcfg.kcbPaybill,
-              orgPassKey: '',
+              orgPassKey:
+                cleanEnvVar(process.env.KCB_PASSKEY) ||
+                (kcfg.kcbPaybill === darajaCfg.shortcode ? darajaCfg.passkey : ''),
               callbackUrl: kcfg.urls.callbackUrl,
               transactionDescription: narration.slice(0, 64),
             };
@@ -6989,7 +7208,111 @@ async function startServer() {
         }
       }
 
-      // 1C. KCB iBank / Paybill 522522 Deposit Webhook Bridge (stays PENDING until KCB IPN callback confirms)
+      // 1C. PayHero M-Pesa STK Push Deposit fallback using saved PAYHERO_AUTH_TOKEN & PAYHERO_CHANNEL_ID
+      if (
+        preferredRoute !== 'bridge' &&
+        pcfg.apiConfigured &&
+        pcfg.channelIdNum &&
+        parsedPhone &&
+        preferredRoute === 'auto'
+      ) {
+        try {
+          const upstream = await fetchTextWithTimeout(
+            `${pcfg.apiBaseUrl}/api/v2/payments`,
+            {
+              method: 'POST',
+              headers: {
+                Authorization: pcfg.authHeader,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                amount: amountKes,
+                phone_number: parsedPhone.msisdn,
+                channel_id: pcfg.channelIdNum,
+                provider: 'm-pesa',
+                external_reference: reference,
+                customer_name: accountName || 'KCB iBank Customer',
+                callback_url: kcfg.urls.callbackUrl,
+              }),
+            },
+            6000
+          );
+          let upstreamData: Record<string, any> = {};
+          try {
+            upstreamData = upstream.text.trim() ? (JSON.parse(upstream.text) as Record<string, any>) : {};
+          } catch {
+            upstreamData = {};
+          }
+          const remoteRef = String(
+            upstreamData.reference || upstreamData.CheckoutRequestID || upstreamData.merchant_reference || ''
+          );
+          if (upstream.ok && remoteRef) {
+            const record: MpesaTxRecord = {
+              id: reference,
+              originatorConversationId: remoteRef,
+              type: 'KCB_DEPOSIT',
+              standalone: isStandaloneKcb,
+              environment: kcfg.env,
+              phone: parsedPhone.msisdn,
+              recipientPhone: parsedPhone.phone,
+              recipientMsisdn: parsedPhone.msisdn,
+              kcbAction: 'DEPOSIT',
+              kcbTransferRail: kcbRail,
+              kcbAccountNumber: targetAccountDisplay,
+              kcbAccountName: accountName || undefined,
+              partyB: kcfg.kcbPaybill,
+              accountReference: targetAccountDisplay,
+              usdAmount: amountUsd,
+              kesAmount: amountKes,
+              loginId: resolvedLoginId,
+              status: 'PENDING',
+              callbackVerified: false,
+              resultDesc: `PayHero M-Pesa STK prompt sent (${remoteRef}) for KCB iBank Deposit (${targetLabel}). Enter M-Pesa PIN to confirm.`,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+            };
+            mpesaTransactions.set(record.id, record);
+            originatorToPrimaryId.set(remoteRef, record.id);
+            const payload = {
+              ok: true,
+              configured: true,
+              action: 'DEPOSIT' as const,
+              mode: 'PAYHERO_BANK_01' as const,
+              kcbRail,
+              status: 'PENDING' as const,
+              callbackVerified: false,
+              reference: record.id,
+              remoteReference: remoteRef,
+              kcbPaybill: kcfg.kcbPaybill,
+              targetLabel,
+              callbackUrl: kcfg.urls.callbackUrl,
+              message: record.resultDesc,
+            };
+            recordCashierDiagnostic({
+              channel: 'KCB_BANK',
+              method: 'POST',
+              endpoint: resolvedEndpoint,
+              httpStatus: 202,
+              outcome: 'PENDING',
+              phoneOrTarget: targetLabel,
+              usdAmount: amountUsd,
+              kesAmount: amountKes,
+              reference: record.id,
+              summary: record.resultDesc || 'KCB Deposit dispatched via PayHero STK',
+              responsePayload: payload,
+            });
+            return res.status(202).json(payload);
+          }
+          const phStkErr = String(
+            upstreamData.message || upstreamData.error_message || upstreamData.error || `PayHero STK HTTP ${upstream.status}`
+          );
+          upstreamNotes.push(`PayHero STK: ${phStkErr}`);
+        } catch (err: any) {
+          upstreamNotes.push(`PayHero STK: ${err?.message || 'timed out'}`);
+        }
+      }
+
+      // 1D. KCB iBank / Paybill 522522 Deposit Webhook Bridge (stays PENDING until KCB IPN callback confirms)
       const fallbackSuffix = upstreamNotes.length > 0 ? ` [Upstream note: ${upstreamNotes.join('; ')}]` : '';
       const collectionAcct = accountNumber || kcfg.ibankAccountNumber || kcfg.merchantId;
       const record: MpesaTxRecord = {
@@ -7056,167 +7379,183 @@ async function startServer() {
     if (preferredRoute !== 'bridge' && kcfg.buniConfigured && (preferredRoute === 'auto' || preferredRoute === 'buni')) {
       const tokenRes = await fetchKcbBuniAccessToken(kcfg);
       if (!tokenRes.ok || !tokenRes.token) {
+        const oauthErr = tokenRes.error || 'Unable to authenticate with KCB Buni OAuth.';
         recordCashierDiagnostic({
           channel: 'KCB_BANK',
           method: 'POST',
           endpoint: resolvedEndpoint,
           httpStatus: 502,
-          outcome: 'REJECTED',
+          outcome: preferredRoute === 'buni' ? 'REJECTED' : 'WARNING',
           phoneOrTarget: targetLabel,
           usdAmount: amountUsd,
           kesAmount: amountKes,
           reference,
-          summary: tokenRes.error || 'KCB Buni OAuth failed',
+          summary: oauthErr,
         });
-        return res.status(502).json({
-          ok: false,
-          configured: true,
-          error: tokenRes.error || 'Unable to authenticate with KCB Buni OAuth.',
-        });
-      }
-
-      try {
-        const buniBody = {
-          debitAccountNumber: kcfg.debitAccountNumber,
-          creditAccountNumber: kcbRail === 'kcb_vooma' ? parsedPhone!.msisdn : accountNumber,
-          debitAmount: amountKes,
-          amount: amountKes,
-          currency: 'KES',
-          companyCode: kcfg.companyCode,
-          transactionType: kcbRail === 'pesalink' ? 'PESALINK' : kcbRail === 'kcb_vooma' ? 'VOOMA' : 'IFT',
-          beneficiaryDetails: accountName || 'KCB iBank Customer',
-          narration,
-          externalReference: reference,
-          callbackUrl: kcfg.urls.callbackUrl,
-        };
-
-        const activeBuniBase = tokenRes.baseUrl || kcfg.buniBaseUrl;
-        const upstream = await fetchTextWithTimeout(
-          `${activeBuniBase}/fundstransfer/1.0.0/api/v1/transfer`,
-          {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${tokenRes.token}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(buniBody),
-          },
-          6000
-        );
-        let upstreamData: Record<string, any> = {};
-        try {
-          upstreamData = upstream.text.trim() ? (JSON.parse(upstream.text) as Record<string, any>) : {};
-        } catch {
-          upstreamData = { message: extractSafeDarajaTextError(upstream.status, upstream.text, upstream.statusText) };
-        }
-
-        if (!upstream.ok) {
-          const errMsg = String(
-            upstreamData.message ||
-              upstreamData.error_description ||
-              upstreamData.error ||
-              `KCB Buni HTTP ${upstream.status}`
-          );
-          recordCashierDiagnostic({
-            channel: 'KCB_BANK',
-            method: 'POST',
-            endpoint: resolvedEndpoint,
-            httpStatus: upstream.status,
-            outcome: 'REJECTED',
-            phoneOrTarget: targetLabel,
-            usdAmount: amountUsd,
-            kesAmount: amountKes,
-            reference,
-            summary: errMsg,
-            responsePayload: upstreamData,
-          });
-          return res.status(upstream.status >= 400 && upstream.status < 600 ? upstream.status : 502).json({
+        if (preferredRoute === 'buni') {
+          return res.status(502).json({
             ok: false,
             configured: true,
-            error: errMsg,
-            raw: upstreamData,
+            error: oauthErr,
           });
         }
-
-        const remoteRef = String(
-          upstreamData.transactionReference || upstreamData.ftReference || upstreamData.reference || reference
-        );
-        const record: MpesaTxRecord = {
-          id: reference,
-          originatorConversationId: remoteRef !== reference ? remoteRef : undefined,
-          type: txType,
-          standalone: isStandaloneKcb,
-          environment: kcfg.env,
-          phone: targetAccountDisplay,
-          recipientPhone: parsedPhone ? parsedPhone.phone : targetAccountDisplay,
-          recipientMsisdn: parsedPhone ? parsedPhone.msisdn : targetAccountDisplay,
-          kcbAction: action,
-          kcbTransferRail: kcbRail,
-          kcbAccountNumber: targetAccountDisplay,
-          kcbAccountName: accountName || undefined,
-          partyB: kcbRail === 'paybill_522522' ? kcfg.kcbPaybill : targetAccountDisplay,
-          accountReference: targetAccountDisplay,
-          usdAmount: amountUsd,
-          kesAmount: amountKes,
-          loginId: resolvedLoginId,
-          status: 'PENDING',
-          callbackVerified: false,
-          resultDesc: `Submitted KCB iBank ${action.toLowerCase()} to KCB Buni Funds Transfer (${remoteRef}) for ${targetLabel}. Awaiting KCB settlement confirmation.`,
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-        };
-
-        const receipt =
-          upstreamData.ftReference || upstreamData.mpesaReceipt || upstreamData.transactionId;
-        if (upstreamData.status || receipt) {
-          applyKcbVerificationPayload(record, {
-            statusRaw: upstreamData.status,
-            resultCode: upstreamData.responseCode ?? upstreamData.statusCode,
-            receipt: receipt ? String(receipt) : undefined,
-            message: upstreamData.message ? String(upstreamData.message) : undefined,
+        upstreamNotes.push(`KCB Buni OAuth: ${oauthErr}`);
+      } else {
+        try {
+          const buniBody = {
+            debitAccountNumber: kcfg.debitAccountNumber,
+            creditAccountNumber: kcbRail === 'kcb_vooma' ? parsedPhone!.msisdn : accountNumber,
+            debitAmount: amountKes,
             amount: amountKes,
-            source: 'KCB_BUNI_API',
-          });
+            currency: 'KES',
+            companyCode: kcfg.companyCode,
+            transactionType: kcbRail === 'pesalink' ? 'PESALINK' : kcbRail === 'kcb_vooma' ? 'VOOMA' : 'IFT',
+            beneficiaryDetails: accountName || 'KCB iBank Customer',
+            narration,
+            externalReference: reference,
+            callbackUrl: kcfg.urls.callbackUrl,
+          };
+
+          const activeBuniBase = tokenRes.baseUrl || kcfg.buniBaseUrl;
+          const upstream = await fetchTextWithTimeout(
+            `${activeBuniBase}/fundstransfer/1.0.0/api/v1/transfer`,
+            {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${tokenRes.token}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify(buniBody),
+            },
+            6000
+          );
+          let upstreamData: Record<string, any> = {};
+          try {
+            upstreamData = upstream.text.trim() ? (JSON.parse(upstream.text) as Record<string, any>) : {};
+          } catch {
+            upstreamData = {
+              message:
+                upstream.status === 404
+                  ? 'KCB Buni Funds Transfer API returned HTTP 404 (not subscribed on this Buni app).'
+                  : extractSafeDarajaTextError(upstream.status, upstream.text, upstream.statusText),
+            };
+          }
+
+          if (!upstream.ok) {
+            const errMsg = String(
+              upstreamData.message ||
+                upstreamData.error_description ||
+                upstreamData.error ||
+                `KCB Buni HTTP ${upstream.status}`
+            );
+            recordCashierDiagnostic({
+              channel: 'KCB_BANK',
+              method: 'POST',
+              endpoint: resolvedEndpoint,
+              httpStatus: upstream.status,
+              outcome: preferredRoute === 'buni' ? 'REJECTED' : 'WARNING',
+              phoneOrTarget: targetLabel,
+              usdAmount: amountUsd,
+              kesAmount: amountKes,
+              reference,
+              summary: `KCB Buni IFT declined: ${errMsg}`,
+              responsePayload: upstreamData,
+            });
+            if (preferredRoute === 'buni') {
+              return res.status(upstream.status >= 400 && upstream.status < 600 ? upstream.status : 502).json({
+                ok: false,
+                configured: true,
+                error: errMsg,
+                raw: upstreamData,
+              });
+            }
+            upstreamNotes.push(`KCB Buni IFT: ${errMsg}`);
+          } else {
+            const remoteRef = String(
+              upstreamData.transactionReference || upstreamData.ftReference || upstreamData.reference || reference
+            );
+            const record: MpesaTxRecord = {
+              id: reference,
+              originatorConversationId: remoteRef !== reference ? remoteRef : undefined,
+              type: txType,
+              standalone: isStandaloneKcb,
+              environment: kcfg.env,
+              phone: targetAccountDisplay,
+              recipientPhone: parsedPhone ? parsedPhone.phone : targetAccountDisplay,
+              recipientMsisdn: parsedPhone ? parsedPhone.msisdn : targetAccountDisplay,
+              kcbAction: action,
+              kcbTransferRail: kcbRail,
+              kcbAccountNumber: targetAccountDisplay,
+              kcbAccountName: accountName || undefined,
+              partyB: kcbRail === 'paybill_522522' ? kcfg.kcbPaybill : targetAccountDisplay,
+              accountReference: targetAccountDisplay,
+              usdAmount: amountUsd,
+              kesAmount: amountKes,
+              loginId: resolvedLoginId,
+              status: 'PENDING',
+              callbackVerified: false,
+              resultDesc: `Submitted KCB iBank ${action.toLowerCase()} to KCB Buni Funds Transfer (${remoteRef}) for ${targetLabel}. Awaiting KCB settlement confirmation.`,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+            };
+
+            const receipt =
+              upstreamData.ftReference || upstreamData.mpesaReceipt || upstreamData.transactionId;
+            if (upstreamData.status || receipt) {
+              applyKcbVerificationPayload(record, {
+                statusRaw: upstreamData.status,
+                resultCode: upstreamData.responseCode ?? upstreamData.statusCode,
+                receipt: receipt ? String(receipt) : undefined,
+                message: upstreamData.message ? String(upstreamData.message) : undefined,
+                amount: amountKes,
+                source: 'KCB_BUNI_API',
+              });
+            }
+
+            mpesaTransactions.set(record.id, record);
+            if (remoteRef !== record.id) originatorToPrimaryId.set(remoteRef, record.id);
+
+            const payload = {
+              ok: true,
+              configured: true,
+              action,
+              mode: 'KCB_BUNI_API' as const,
+              kcbRail,
+              status: record.status,
+              callbackVerified: Boolean(record.callbackVerified),
+              reference: record.id,
+              remoteReference: remoteRef,
+              mpesaReceipt: record.mpesaReceipt,
+              targetLabel,
+              callbackUrl: kcfg.urls.callbackUrl,
+              message: record.safaricomConfirmationText || record.resultDesc,
+            };
+            recordCashierDiagnostic({
+              channel: 'KCB_BANK',
+              method: 'POST',
+              endpoint: resolvedEndpoint,
+              httpStatus: record.status === 'COMPLETED' ? 200 : 202,
+              outcome: record.status === 'COMPLETED' ? 'OK' : 'PENDING',
+              phoneOrTarget: targetLabel,
+              usdAmount: amountUsd,
+              kesAmount: amountKes,
+              reference: record.id,
+              summary: String(payload.message),
+              responsePayload: payload,
+            });
+            return res.status(record.status === 'COMPLETED' ? 200 : 202).json(payload);
+          }
+        } catch (err: any) {
+          const buniErr = err?.message || 'Unable to reach KCB Buni API.';
+          if (preferredRoute === 'buni') {
+            return res.status(502).json({
+              ok: false,
+              configured: true,
+              error: buniErr,
+            });
+          }
+          upstreamNotes.push(`KCB Buni IFT: ${buniErr}`);
         }
-
-        mpesaTransactions.set(record.id, record);
-        if (remoteRef !== record.id) originatorToPrimaryId.set(remoteRef, record.id);
-
-        const payload = {
-          ok: true,
-          configured: true,
-          action,
-          mode: 'KCB_BUNI_API' as const,
-          kcbRail,
-          status: record.status,
-          callbackVerified: Boolean(record.callbackVerified),
-          reference: record.id,
-          remoteReference: remoteRef,
-          mpesaReceipt: record.mpesaReceipt,
-          targetLabel,
-          callbackUrl: kcfg.urls.callbackUrl,
-          message: record.safaricomConfirmationText || record.resultDesc,
-        };
-        recordCashierDiagnostic({
-          channel: 'KCB_BANK',
-          method: 'POST',
-          endpoint: resolvedEndpoint,
-          httpStatus: record.status === 'COMPLETED' ? 200 : 202,
-          outcome: record.status === 'COMPLETED' ? 'OK' : 'PENDING',
-          phoneOrTarget: targetLabel,
-          usdAmount: amountUsd,
-          kesAmount: amountKes,
-          reference: record.id,
-          summary: String(payload.message),
-          responsePayload: payload,
-        });
-        return res.status(record.status === 'COMPLETED' ? 200 : 202).json(payload);
-      } catch (err: any) {
-        return res.status(502).json({
-          ok: false,
-          configured: true,
-          error: err?.message || 'Unable to reach KCB Buni API.',
-        });
       }
     }
 
@@ -7357,16 +7696,26 @@ async function startServer() {
       }
     }
 
-    // 3. Live PayHero Bank Transfer (Bank Code 01 = KCB Bank Kenya) if configured
+    // 3. Live PayHero Bank Transfer (Bank Code 01 = KCB Bank Kenya) or Mobile Vooma fallback if configured
     if (
       preferredRoute !== 'bridge' &&
       pcfg.apiConfigured &&
-      (preferredRoute === 'payhero_bank' || preferredRoute === 'auto') &&
-      kcbRail !== 'kcb_vooma'
+      (preferredRoute === 'payhero_bank' || preferredRoute === 'auto')
     ) {
       try {
         const payheroPayload =
-          kcbRail === 'paybill_522522'
+          kcbRail === 'kcb_vooma' && parsedPhone
+            ? {
+                external_reference: reference,
+                amount: amountKes,
+                payment_type: 'mobile',
+                channel: 'mobile',
+                provider: 'm-pesa',
+                network_code: '63902',
+                phone_number: parsedPhone.msisdn,
+                callback_url: kcfg.urls.callbackUrl,
+              }
+            : kcbRail === 'paybill_522522'
             ? {
                 external_reference: reference,
                 amount: amountKes,
@@ -7621,7 +7970,7 @@ async function startServer() {
     });
   });
 
-  app.get('/api/kcb/callback', (req, res) => {
+  const handleKcbIpnGet = (req: Request, res: Response) => {
     const kcfg = getKcbConfig(req);
     const seen = new Set<string>();
     const pendingTransfersCount = Array.from(mpesaTransactions.values()).filter((t) => {
@@ -7631,10 +7980,11 @@ async function startServer() {
     }).length;
     const recentWebhooks = incomingWebhookCallbacks
       .filter((w) => w.kind === 'KCB_CALLBACK')
-      .slice(0, 10)
+      .slice(0, 15)
       .map((w) => ({
         id: w.id,
         receivedAt: w.receivedAt,
+        endpoint: w.endpoint,
         reference: w.reference,
         resultCode: w.resultCode,
         resultDesc: w.resultDesc,
@@ -7645,58 +7995,105 @@ async function startServer() {
     return res.json({
       ok: true,
       environment: kcfg.env,
-      endpoint: '/api/kcb/callback',
+      endpoint: req.path === '/api/kcb/ipn' ? '/api/kcb/ipn' : '/api/kcb/callback',
+      ipnEndpoint: '/api/kcb/ipn',
+      callbackEndpoint: '/api/kcb/callback',
       method: 'POST',
       merchantId: kcfg.merchantId,
       kcbPaybill: kcfg.kcbPaybill,
       companyCode: kcfg.companyCode,
       mode: kcfg.activeMode,
       webhookSecretConfigured: Boolean(kcfg.webhookSecret),
-      signatureHeader: 'X-Kcb-Signature (HMAC-SHA256 hex or sha256=<hex> of raw JSON body)',
+      signatureHeader:
+        'Signature / X-Kcb-Signature / X-Signature (HMAC-SHA256 hex or base64 of raw JSON body, or Bearer/X-API-Key)',
       callbackAuthGated: isPreviewAuthGatedUrl(kcfg.publicBase),
       pendingTransfersCount,
       urls: kcfg.urls,
-      expectedBody: {
-        externalReference: 'KCB-... (also accepts external_reference, ExternalReference, transactionReference, reference, BillRefNumber)',
-        status: 'SUCCESS | COMPLETED | FAILED | REJECTED (also accepts response.Status)',
-        resultCode: '0 (success) | non-zero error code',
-        bankReference: 'KCB FT / Bank / M-Pesa receipt code (also accepts ftReference, MpesaReceiptNumber, TransID, provider_reference)',
-        amount: 'Optional settled KES amount',
-        statusDescription: 'Optional settlement message',
+      expectedIpnPayload: {
+        transactionReference: 'FT... / KCB bank or M-Pesa receipt code (also ftReference, retrievalRefNumber, TransID)',
+        requestId: 'KCB unique IPN notification ID',
+        channelCode: 'KCB channel code (e.g. 202 / MPESA / PESALINK)',
+        timestamp: 'ISO-8601 timestamp',
+        transactionAmount: 'Settled KES amount',
+        currency: 'KES',
+        customerReference: 'Your KCB-... order reference or account/phone identifier (also externalReference, BillRefNumber)',
+        customerName: 'Optional payer name',
+        customerMobileNumber: 'Optional payer mobile (2547...)',
+        creditAccountIdentifier: 'Optional target KCB account / Paybill / Till',
+        narration: 'Optional payment remarks / reference',
+        statusCode: 'Optional 0 (success) | non-zero error',
+        statusMessage: 'Optional status description',
+      },
+      ackResponseFormat: {
+        transactionID: '<internal tx reference or KCB transactionReference>',
+        statusCode: '0',
+        statusMessage: 'Success',
       },
       recentWebhooks,
     });
-  });
+  };
 
-  app.post('/api/kcb/callback', (req, res) => {
+  const handleKcbIpnPost = (req: Request, res: Response) => {
     const kcfg = getKcbConfig(req);
+    const activeEndpoint = req.path === '/api/kcb/ipn' ? '/api/kcb/ipn' : '/api/kcb/callback';
     const bodyObj = (typeof req.body === 'object' && req.body !== null ? req.body : {}) as Record<string, unknown>;
     const headerObj =
       typeof bodyObj.header === 'object' && bodyObj.header !== null ? (bodyObj.header as Record<string, unknown>) : {};
     const dataObj =
       typeof bodyObj.data === 'object' && bodyObj.data !== null ? (bodyObj.data as Record<string, unknown>) : {};
+    const notificationObj =
+      typeof bodyObj.notification === 'object' && bodyObj.notification !== null
+        ? (bodyObj.notification as Record<string, unknown>)
+        : {};
+    const payloadObj =
+      typeof bodyObj.payload === 'object' && bodyObj.payload !== null ? (bodyObj.payload as Record<string, unknown>) : {};
     const requestPayloadObj =
       typeof bodyObj.requestPayload === 'object' && bodyObj.requestPayload !== null
         ? (bodyObj.requestPayload as Record<string, unknown>)
         : typeof bodyObj.response === 'object' && bodyObj.response !== null
         ? (bodyObj.response as Record<string, unknown>)
         : {};
+    const txInfoObj =
+      typeof requestPayloadObj.transactionInfo === 'object' && requestPayloadObj.transactionInfo !== null
+        ? (requestPayloadObj.transactionInfo as Record<string, unknown>)
+        : {};
     const primaryDataObj =
-      typeof requestPayloadObj.primaryData === 'object' && requestPayloadObj.primaryData !== null
+      typeof txInfoObj.primaryData === 'object' && txInfoObj.primaryData !== null
+        ? (txInfoObj.primaryData as Record<string, unknown>)
+        : typeof requestPayloadObj.primaryData === 'object' && requestPayloadObj.primaryData !== null
         ? (requestPayloadObj.primaryData as Record<string, unknown>)
         : {};
+    const additionalDetailsObj =
+      typeof txInfoObj.additionalDetails === 'object' && txInfoObj.additionalDetails !== null
+        ? (txInfoObj.additionalDetails as Record<string, unknown>)
+        : {};
+
     const merged: Record<string, unknown> = {
-      ...dataObj,
+      ...additionalDetailsObj,
       ...primaryDataObj,
+      ...txInfoObj,
+      ...dataObj,
+      ...notificationObj,
+      ...payloadObj,
       ...requestPayloadObj,
       ...headerObj,
       ...bodyObj,
     };
 
+    const narrationText = String(merged.narration ?? merged.remarks ?? merged.description ?? '').trim();
+    const narrationMatch = narrationText.match(/\b(KCB-\d+-[A-Z0-9]+)\b/i);
+
     const candidates = [
       merged.externalReference,
       merged.external_reference,
       merged.ExternalReference,
+      merged.customerReference,
+      merged.customer_reference,
+      merged.CustomerReference,
+      merged.BillRefNumber,
+      merged.accountReference,
+      merged.requestId,
+      merged.notificationId,
       merged.transactionReference,
       merged.reference,
       merged.ftReference,
@@ -7705,9 +8102,10 @@ async function startServer() {
       merged.ConversationID,
       merged.CheckoutRequestID,
       merged.checkout_request_id,
-      merged.BillRefNumber,
+      merged.businessKey,
       merged.transaction_id,
       merged.messageID,
+      narrationMatch?.[1],
     ]
       .filter(Boolean)
       .map((v) => String(v).trim());
@@ -7715,23 +8113,42 @@ async function startServer() {
 
     if (kcfg.webhookSecret) {
       const sigHeader = String(
-        req.headers['x-kcb-signature'] || req.headers['x-webhook-signature'] || req.headers['x-signature'] || ''
+        req.headers['signature'] ||
+          req.headers['x-kcb-signature'] ||
+          req.headers['x-webhook-signature'] ||
+          req.headers['x-signature'] ||
+          bodyObj.signature ||
+          ''
       ).trim();
-      const sigHex = sigHeader.replace(/^sha256=/i, '').trim().toLowerCase();
+      const authHeader = String(req.headers['authorization'] || '').trim();
+      const apiKeyHeader = String(req.headers['x-api-key'] || '').trim();
+      const bearerToken = /^Bearer\s+/i.test(authHeader) ? authHeader.replace(/^Bearer\s+/i, '').trim() : '';
+
+      const sigClean = sigHeader.replace(/^sha256=/i, '').trim();
+      const sigHex = sigClean.toLowerCase();
       const rawBody = (req as Request & { rawBody?: string }).rawBody || JSON.stringify(req.body || {});
-      const expected = crypto.createHmac('sha256', kcfg.webhookSecret).update(rawBody).digest('hex').toLowerCase();
+      const hmacDigest = crypto.createHmac('sha256', kcfg.webhookSecret).update(rawBody);
+      const expectedHex = hmacDigest.digest('hex').toLowerCase();
+      const expectedBase64 = crypto.createHmac('sha256', kcfg.webhookSecret).update(rawBody).digest('base64');
+
       const isHex = /^[0-9a-f]{64}$/i.test(sigHex);
+      const safeEqualUtf8 = (a: string, b: string) =>
+        a.length > 0 && a.length === b.length && crypto.timingSafeEqual(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8'));
+
       const validSig =
         (isHex &&
-          sigHex.length === expected.length &&
-          crypto.timingSafeEqual(Buffer.from(sigHex, 'hex'), Buffer.from(expected, 'hex'))) ||
-        sigHeader === kcfg.webhookSecret;
+          sigHex.length === expectedHex.length &&
+          crypto.timingSafeEqual(Buffer.from(sigHex, 'hex'), Buffer.from(expectedHex, 'hex'))) ||
+        safeEqualUtf8(sigClean, expectedBase64) ||
+        safeEqualUtf8(sigHeader, kcfg.webhookSecret) ||
+        safeEqualUtf8(bearerToken, kcfg.webhookSecret) ||
+        safeEqualUtf8(apiKeyHeader, kcfg.webhookSecret);
 
       if (!validSig) {
-        const errMsg = 'Invalid KCB webhook signature header.';
+        const errMsg = 'Invalid KCB IPN webhook signature header.';
         const rawEntry = recordIncomingWebhook(req as Request & { rawBody?: string }, {
           kind: 'KCB_CALLBACK',
-          endpoint: '/api/kcb/callback',
+          endpoint: activeEndpoint,
           reference: refStr,
           resultCode: '401_HMAC_INVALID',
           resultDesc: errMsg,
@@ -7740,22 +8157,47 @@ async function startServer() {
         recordCashierDiagnostic({
           channel: 'KCB_BANK',
           method: 'POST',
-          endpoint: '/api/kcb/callback',
+          endpoint: activeEndpoint,
           httpStatus: 401,
           outcome: 'REJECTED',
           reference: refStr,
           summary: `${errMsg} (source ${rawEntry.sourceIp})`,
-          responsePayload: { ok: false, error: errMsg, signatureHeaderPresent: Boolean(sigHeader) },
+          responsePayload: { ok: false, error: errMsg, signatureHeaderPresent: Boolean(sigHeader || bearerToken || apiKeyHeader) },
         });
-        return res.status(401).json({ ok: false, error: errMsg });
+        return res.status(401).json({
+          ok: false,
+          statusCode: '401',
+          statusMessage: errMsg,
+          error: errMsg,
+        });
       }
     }
 
-    const statusRaw = merged.Status ?? merged.status ?? merged.transactionStatus ?? merged.statusDescription;
-    const resultCodeRaw = merged.resultCode ?? merged.ResultCode ?? merged.responseCode ?? merged.statusCode ?? merged.result_code;
+    const statusRaw =
+      merged.Status ?? merged.status ?? merged.transactionStatus ?? merged.statusMessage ?? merged.statusDescription;
+    const resultCodeRaw =
+      merged.resultCode ?? merged.ResultCode ?? merged.responseCode ?? merged.statusCode ?? merged.result_code;
+
+    const customerRefStr = String(
+      merged.customerReference ?? merged.customer_reference ?? merged.BillRefNumber ?? merged.externalReference ?? ''
+    ).trim();
+    const channelCodeStr = merged.channelCode ? String(merged.channelCode).trim() : undefined;
+    const customerNameStr = merged.customerName ? String(merged.customerName).trim() : undefined;
+    const customerMobileStr = merged.customerMobileNumber
+      ? String(merged.customerMobileNumber).trim()
+      : merged.MSISDN
+      ? String(merged.MSISDN).trim()
+      : undefined;
+    const creditAccountStr = merged.creditAccountIdentifier
+      ? String(merged.creditAccountIdentifier).trim()
+      : merged.BusinessShortCode
+      ? String(merged.BusinessShortCode).trim()
+      : undefined;
+
     const receiptRaw =
-      merged.bankReference ??
       merged.ftReference ??
+      merged.bankReference ??
+      merged.retrievalRefNumber ??
       merged.MpesaReceiptNumber ??
       merged.TransID ??
       merged.transactionID ??
@@ -7763,7 +8205,10 @@ async function startServer() {
       merged.mpesaReceipt ??
       merged.provider_reference ??
       merged.third_party_reference ??
-      merged.receipt;
+      merged.receipt ??
+      (merged.transactionReference && String(merged.transactionReference).trim() !== customerRefStr
+        ? merged.transactionReference
+        : undefined);
     const receiptStr = receiptRaw ? String(receiptRaw).trim() : undefined;
     const messageStr = merged.statusDescription
       ? String(merged.statusDescription)
@@ -7773,8 +8218,9 @@ async function startServer() {
       ? String(merged.ResultDesc)
       : merged.message
       ? String(merged.message)
-      : undefined;
-    const amountRaw = merged.transactionAmount ?? merged.debitAmount ?? merged.TransAmount ?? merged.Amount ?? merged.amount ?? merged.kesAmount;
+      : narrationText || undefined;
+    const amountRaw =
+      merged.transactionAmount ?? merged.debitAmount ?? merged.TransAmount ?? merged.Amount ?? merged.amount ?? merged.kesAmount;
     const amountNum = amountRaw !== undefined ? Number(amountRaw) : undefined;
     const explicitSuccessFlag =
       merged.success === true || bodyObj.status === true
@@ -7782,6 +8228,13 @@ async function startServer() {
         : merged.success === false || bodyObj.status === false
         ? false
         : undefined;
+    const isIpnPush = Boolean(
+      req.path === '/api/kcb/ipn' ||
+        merged.channelCode ||
+        merged.requestId ||
+        merged.customerReference ||
+        merged.creditAccountIdentifier
+    );
 
     let matchedTx: MpesaTxRecord | undefined;
     for (const c of candidates) {
@@ -7793,19 +8246,42 @@ async function startServer() {
       }
     }
 
+    // Secondary match for KCB Paybill / Account IPN where payer used account/phone + exact KES amount
+    if (!matchedTx && amountNum !== undefined && !Number.isNaN(amountNum) && amountNum > 0) {
+      const parsedPayerPhone = customerMobileStr ? normalizeKenyanMsisdnServer(customerMobileStr) : null;
+      const pendingKcb = Array.from(mpesaTransactions.values())
+        .filter((t) => isKcbTxType(t.type) && t.status === 'PENDING')
+        .sort((a, b) => b.createdAt - a.createdAt);
+      matchedTx = pendingKcb.find((t) => {
+        const amtMatch = Math.abs(Number(t.kesAmount || 0) - amountNum) < 1;
+        if (!amtMatch) return false;
+        const acctMatch =
+          Boolean(customerRefStr && (t.accountReference === customerRefStr || t.kcbAccountNumber === customerRefStr)) ||
+          Boolean(creditAccountStr && (t.kcbAccountNumber === creditAccountStr || t.partyB === creditAccountStr));
+        const phoneMatch = Boolean(parsedPayerPhone && (t.phone === parsedPayerPhone.msisdn || t.recipientMsisdn === parsedPayerPhone.msisdn));
+        return acctMatch || phoneMatch;
+      });
+    }
+
     let matchedTransaction = false;
     let verificationError: string | undefined;
     let outcome: ServerDiagOutcome = 'WARNING';
 
     if (matchedTx) {
       matchedTransaction = true;
+      const ipnNarrative =
+        messageStr ||
+        (customerNameStr || channelCodeStr
+          ? `KCB IPN confirmed${channelCodeStr ? ` via ${channelCodeStr}` : ''}${customerNameStr ? ` from ${customerNameStr}` : ''} (${receiptStr || matchedTx.id}).`
+          : undefined);
       const result = applyKcbVerificationPayload(matchedTx, {
         statusRaw,
         successFlag: explicitSuccessFlag,
         resultCode: resultCodeRaw,
         receipt: receiptStr,
-        message: messageStr,
+        message: ipnNarrative,
         amount: amountNum,
+        isIpnPush,
         source: 'KCB_CALLBACK',
       });
       verificationError = result.error;
@@ -7814,10 +8290,13 @@ async function startServer() {
 
     const rawEntry = recordIncomingWebhook(req as Request & { rawBody?: string }, {
       kind: 'KCB_CALLBACK',
-      endpoint: '/api/kcb/callback',
+      endpoint: activeEndpoint,
       reference: refStr,
-      resultCode: resultCodeRaw !== undefined ? String(resultCodeRaw) : statusRaw ? String(statusRaw) : undefined,
-      resultDesc: verificationError || messageStr,
+      resultCode: resultCodeRaw !== undefined ? String(resultCodeRaw) : statusRaw ? String(statusRaw) : isIpnPush ? 'IPN_0' : undefined,
+      resultDesc:
+        verificationError ||
+        messageStr ||
+        (amountNum && receiptStr ? `KCB IPN KES ${amountNum.toLocaleString()} · Ref ${receiptStr}` : undefined),
       mpesaReceipt: receiptStr,
       matchedTransaction,
     });
@@ -7825,28 +8304,40 @@ async function startServer() {
     recordCashierDiagnostic({
       channel: 'KCB_BANK',
       method: 'POST',
-      endpoint: '/api/kcb/callback',
+      endpoint: activeEndpoint,
       httpStatus: 200,
       outcome,
+      phoneOrTarget: customerMobileStr || creditAccountStr || customerRefStr,
+      kesAmount: amountNum && !Number.isNaN(amountNum) ? amountNum : undefined,
       reference: receiptStr || refStr,
       summary:
         verificationError ||
         messageStr ||
-        `KCB iBank IPN callback POST (${matchedTransaction ? 'matched tx' : 'unmatched ref'}) from ${rawEntry.sourceIp}`,
+        `KCB Buni IPN POST (${matchedTransaction ? 'matched tx' : 'logged notification'}) from ${rawEntry.sourceIp}`,
       responsePayload:
         typeof req.body === 'object' && req.body !== null ? (req.body as Record<string, unknown>) : { raw: req.body },
     });
 
     return res.json({
       ok: true,
+      transactionID: matchedTx?.id || receiptStr || refStr || rawEntry.id,
+      statusCode: '0',
+      statusMessage: 'Success',
       matchedTransaction,
       reference: matchedTx?.id || refStr,
       status: matchedTx?.status,
       callbackVerified: matchedTx ? Boolean(matchedTx.callbackVerified) : undefined,
       mpesaReceipt: matchedTx?.mpesaReceipt || receiptStr,
+      channelCode: channelCodeStr,
+      customerReference: customerRefStr || undefined,
       verificationError,
     });
-  });
+  };
+
+  app.get('/api/kcb/ipn', handleKcbIpnGet);
+  app.post('/api/kcb/ipn', handleKcbIpnPost);
+  app.get('/api/kcb/callback', handleKcbIpnGet);
+  app.post('/api/kcb/callback', handleKcbIpnPost);
 
   // Real-Time Cashier Diagnostic Logs & Gateway Readiness
   app.get('/api/cashier/diagnostics', (req, res) => {
@@ -7940,6 +8431,7 @@ async function startServer() {
           payheroDepositUrl: pcfg.urls.depositUrl,
           payheroWithdrawUrl: pcfg.urls.withdrawUrl,
           payheroTransferUrl: pcfg.urls.transferUrl,
+          kcbIpnUrl: kcfg.urls.ipnUrl,
           kcbCallbackUrl: kcfg.urls.callbackUrl,
           kcbDepositUrl: kcfg.urls.depositUrl,
           kcbWithdrawUrl: kcfg.urls.withdrawUrl,
@@ -7992,6 +8484,7 @@ async function startServer() {
         dcashCallbackUrl: dcashUrls.callbackUrl,
         valtexCallbackUrl: vcfg.urls.callbackUrl,
         payheroCallbackUrl: pcfg.urls.callbackUrl,
+        kcbIpnUrl: kcfg.urls.ipnUrl,
         kcbCallbackUrl: kcfg.urls.callbackUrl,
       },
     };
@@ -8041,6 +8534,71 @@ async function startServer() {
       responsePayload: next,
     });
     return res.json(next);
+  });
+
+  app.get('/api/mpesa/till-config', (_req, res) => {
+    const cfg = getDarajaConfig();
+    return res.json({
+      ok: true,
+      shortcode: cfg.shortcode,
+      storeNumber: cfg.storeNumber,
+      tillNumber: cfg.tillNumber,
+      stkTransactionType: cfg.stkTransactionType,
+      stkPartyB: cfg.stkPartyB,
+      b2cShortcode: cfg.b2cShortcode,
+      b2bShortcode: cfg.b2bShortcode,
+    });
+  });
+
+  app.post('/api/mpesa/till-config', (req, res) => {
+    const body = (typeof req.body === 'object' && req.body !== null ? req.body : {}) as Record<string, unknown>;
+    const nextTxType =
+      body.transactionType === 'CustomerPayBillOnline' ? 'CustomerPayBillOnline' : 'CustomerBuyGoodsOnline';
+    const nextStore = cleanEnvVar(String(body.storeNumber ?? body.shortcode ?? ''));
+    const nextTill = cleanEnvVar(String(body.tillNumber ?? ''));
+
+    if (nextStore && !/^\d{5,8}$/.test(nextStore)) {
+      return res.status(400).json({ ok: false, error: 'Store / Shortcode must be 5–8 digits (e.g. 1470353).' });
+    }
+    if (nextTill && !/^\d{5,8}$/.test(nextTill)) {
+      return res.status(400).json({ ok: false, error: 'Buy Goods Till Number must be 5–8 digits (e.g. 1953263).' });
+    }
+
+    const updates: Record<string, string | null> = {
+      MPESA_TRANSACTION_TYPE: nextTxType,
+    };
+    if (nextStore) {
+      updates.MPESA_SHORTCODE = nextStore;
+      updates.MPESA_STORE_NUMBER = nextStore;
+    }
+    if (nextTill) {
+      updates.MPESA_TILL_NUMBER = nextTill;
+    }
+    saveRuntimeNonSecretOverrides(updates);
+    const cfg = getDarajaConfig();
+    recordCashierDiagnostic({
+      channel: 'MPESA_STK',
+      method: 'POST',
+      endpoint: '/api/mpesa/till-config',
+      httpStatus: 200,
+      outcome: 'OK',
+      summary: `Updated Daraja STK mode -> ${cfg.stkTransactionType} (Store #${cfg.storeNumber}, PartyB #${cfg.stkPartyB})`,
+      responsePayload: {
+        shortcode: cfg.shortcode,
+        storeNumber: cfg.storeNumber,
+        tillNumber: cfg.tillNumber,
+        stkTransactionType: cfg.stkTransactionType,
+        stkPartyB: cfg.stkPartyB,
+      },
+    });
+    return res.json({
+      ok: true,
+      shortcode: cfg.shortcode,
+      storeNumber: cfg.storeNumber,
+      tillNumber: cfg.tillNumber,
+      stkTransactionType: cfg.stkTransactionType,
+      stkPartyB: cfg.stkPartyB,
+    });
   });
 
   app.post('/api/cashier/callback-config/probe', async (req, res) => {

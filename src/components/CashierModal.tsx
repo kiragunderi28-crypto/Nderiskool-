@@ -133,6 +133,12 @@ export const CashierModal: React.FC = () => {
     rejectedCount?: number;
     creditedUsd?: number;
   } | null>(null);
+  const [payheroInitialAction, setPayheroInitialAction] = useState<'DEPOSIT' | 'WITHDRAWAL' | 'TRANSFER' | undefined>(
+    undefined
+  );
+  const [kcbInitialAction, setKcbInitialAction] = useState<'DEPOSIT' | 'WITHDRAWAL' | 'TRANSFER' | undefined>(
+    undefined
+  );
 
   useEffect(() => {
     setRealIdDraft(realAccount.loginId);
@@ -1127,7 +1133,7 @@ export const CashierModal: React.FC = () => {
                     <span>Need internal Deriv Transfer?</span>
                   </button>
                 </div>
-                <div className={`grid grid-cols-2 ${!account.isReal ? 'sm:grid-cols-3' : 'sm:grid-cols-2'} gap-2`}>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                   <button
                     type="button"
                     onClick={() => setDepositMethod('MPESA')}
@@ -1140,8 +1146,58 @@ export const CashierModal: React.FC = () => {
                     <Smartphone className="w-4 h-4 text-emerald-600" />
                     <span className="font-bold text-xs text-slate-900">M-Pesa STK Push</span>
                     <span className="text-[10px] text-emerald-700 font-mono font-semibold">
-                      {mpesaGatewayStatus.stkConfigured ? `Shortcode #${mpesaGatewayStatus.shortcode}` : 'Daraja Online'}
+                      {mpesaGatewayStatus.stkConfigured
+                        ? mpesaGatewayStatus.stkTransactionType === 'CustomerBuyGoodsOnline' && mpesaGatewayStatus.tillNumber
+                          ? `Till #${mpesaGatewayStatus.tillNumber} · Store #${mpesaGatewayStatus.storeNumber || mpesaGatewayStatus.shortcode}`
+                          : `Paybill #${mpesaGatewayStatus.shortcode}`
+                        : 'Daraja Online'}
                     </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPayheroInitialAction('DEPOSIT');
+                      setCashierTab('payhero');
+                    }}
+                    className="p-3 rounded-xl border flex flex-col items-start gap-1.5 transition-all cursor-pointer bg-indigo-50/50 border-indigo-300 text-slate-900 hover:border-indigo-600 hover:bg-indigo-50"
+                  >
+                    <Wallet className="w-4 h-4 text-indigo-600" />
+                    <span className="font-bold text-xs text-slate-900">PayHero STK</span>
+                    <span className="text-[10px] text-indigo-700 font-mono font-semibold">M-Pesa API v2</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setKcbInitialAction('DEPOSIT');
+                      setCashierTab('kcb');
+                    }}
+                    className="p-3 rounded-xl border flex flex-col items-start gap-1.5 transition-all cursor-pointer bg-emerald-50/40 border-emerald-300 text-slate-900 hover:border-[#004d25] hover:bg-emerald-50"
+                  >
+                    <Landmark className="w-4 h-4 text-[#004d25]" />
+                    <span className="font-bold text-xs text-slate-900">KCB iBank</span>
+                    <span className="text-[10px] text-[#004d25] font-mono font-semibold">Buni STK · Paybill</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setCashierTab('valtex')}
+                    className="p-3 rounded-xl border flex flex-col items-start gap-1.5 transition-all cursor-pointer bg-slate-50 border-slate-300 text-slate-900 hover:border-[#2bbbad] hover:bg-teal-50/40"
+                  >
+                    <Zap className="w-4 h-4 text-[#2bbbad]" />
+                    <span className="font-bold text-xs text-slate-900">Valtex App</span>
+                    <span className="text-[10px] text-teal-700 font-mono font-semibold">Verified Deposit</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setCashierTab('dcash')}
+                    className="p-3 rounded-xl border flex flex-col items-start gap-1.5 transition-all cursor-pointer bg-teal-50/50 border-teal-300 text-slate-900 hover:border-teal-600 hover:bg-teal-50"
+                  >
+                    <Wallet className="w-4 h-4 text-teal-700" />
+                    <span className="font-bold text-xs text-slate-900">D Cash App</span>
+                    <span className="text-[10px] text-teal-800 font-mono font-semibold">Payment Agent KE</span>
                   </button>
 
                   <button
@@ -1173,26 +1229,6 @@ export const CashierModal: React.FC = () => {
                       <span className="text-[10px] text-slate-500 font-mono">Virtual Practice</span>
                     </button>
                   )}
-
-                  <button
-                    type="button"
-                    onClick={() => setCashierTab('valtex')}
-                    className="p-3 rounded-xl border flex flex-col items-start gap-1.5 transition-all cursor-pointer bg-slate-50 border-slate-300 text-slate-900 hover:border-[#2bbbad] hover:bg-teal-50/40"
-                  >
-                    <Zap className="w-4 h-4 text-[#2bbbad]" />
-                    <span className="font-bold text-xs text-slate-900">Valtex App</span>
-                    <span className="text-[10px] text-teal-700 font-mono font-semibold">Verified Deposit</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setCashierTab('kcb')}
-                    className="p-3 rounded-xl border flex flex-col items-start gap-1.5 transition-all cursor-pointer bg-emerald-50/40 border-emerald-300 text-slate-900 hover:border-[#004d25] hover:bg-emerald-50"
-                  >
-                    <Landmark className="w-4 h-4 text-[#004d25]" />
-                    <span className="font-bold text-xs text-slate-900">KCB iBank</span>
-                    <span className="text-[10px] text-[#004d25] font-mono font-semibold">Paybill 522522 · Buni</span>
-                  </button>
                 </div>
               </div>
 
@@ -1202,10 +1238,36 @@ export const CashierModal: React.FC = () => {
                   <div className="p-3.5 bg-white border border-emerald-200 rounded-xl space-y-2.5 shadow-xs">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <span className="text-slate-800 font-bold">Daraja Lipa Na M-Pesa Online (STK Push)</span>
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <span className="text-[10px] text-emerald-700 font-mono font-semibold">
-                          Shortcode #{mpesaGatewayStatus.shortcode || 'Unset'} · Acc: {realAccount.loginId}
+                          {mpesaGatewayStatus.stkTransactionType === 'CustomerBuyGoodsOnline'
+                            ? `Store #${mpesaGatewayStatus.storeNumber || mpesaGatewayStatus.shortcode || '1470353'} -> Till #${mpesaGatewayStatus.tillNumber || '1953263'}`
+                            : `Paybill #${mpesaGatewayStatus.shortcode || 'Unset'}`}{' '}
+                          · Acc: {realAccount.loginId}
                         </span>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            const useBuyGoods = mpesaGatewayStatus.stkTransactionType !== 'CustomerBuyGoodsOnline';
+                            await fetch('/api/mpesa/till-config', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify(
+                                useBuyGoods
+                                  ? { transactionType: 'CustomerBuyGoodsOnline', storeNumber: '1470353', tillNumber: '1953263' }
+                                  : { transactionType: 'CustomerPayBillOnline', shortcode: '8167850' }
+                              ),
+                            });
+                            await refreshMpesaGatewayStatus(false);
+                          }}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-800 font-mono text-[10px] font-bold cursor-pointer"
+                        >
+                          <span>
+                            {mpesaGatewayStatus.stkTransactionType === 'CustomerBuyGoodsOnline'
+                              ? 'Switch to Paybill 8167850'
+                              : 'Use Till 1953263 (Store 1470353)'}
+                          </span>
+                        </button>
                         <button
                           type="button"
                           onClick={handleSyncMpesaBalance}
@@ -1838,7 +1900,37 @@ export const CashierModal: React.FC = () => {
               )}
 
               {/* Cross-Rail Navigation */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 font-mono text-[11px]">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 font-mono text-[11px]">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setKcbInitialAction('TRANSFER');
+                    setCashierTab('kcb');
+                  }}
+                  className="p-2.5 rounded-xl bg-emerald-50/60 hover:bg-emerald-100 border border-emerald-300 text-[#004d25] font-bold flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <Landmark className="w-3.5 h-3.5 text-[#004d25]" />
+                  <span>KCB iBank Transfer</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPayheroInitialAction('TRANSFER');
+                    setCashierTab('payhero');
+                  }}
+                  className="p-2.5 rounded-xl bg-indigo-50/60 hover:bg-indigo-100 border border-indigo-300 text-indigo-900 font-bold flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <Wallet className="w-3.5 h-3.5 text-indigo-600" />
+                  <span>PayHero Transfer</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCashierTab('dp2p')}
+                  className="p-2.5 rounded-xl bg-white hover:bg-emerald-50 border border-slate-200 hover:border-emerald-300 text-slate-800 font-bold flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <Users className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Daraja B2B / DP2P</span>
+                </button>
                 <button
                   type="button"
                   onClick={() => setCashierTab('deposit')}
@@ -1849,11 +1941,11 @@ export const CashierModal: React.FC = () => {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setCashierTab('dp2p')}
-                  className="p-2.5 rounded-xl bg-white hover:bg-emerald-50 border border-slate-200 hover:border-emerald-300 text-slate-800 font-bold flex items-center justify-center gap-1.5 cursor-pointer"
+                  onClick={() => setCashierTab('valtex')}
+                  className="p-2.5 rounded-xl bg-white hover:bg-teal-50 border border-slate-200 hover:border-teal-300 text-slate-800 font-bold flex items-center justify-center gap-1.5 cursor-pointer"
                 >
-                  <Users className="w-3.5 h-3.5 text-emerald-600" />
-                  <span>DP2P M-Pesa</span>
+                  <Zap className="w-3.5 h-3.5 text-[#2bbbad]" />
+                  <span>Valtex Transfer</span>
                 </button>
                 <a
                   href="https://app.deriv.com/cashier/account-transfer"
@@ -2031,7 +2123,13 @@ export const CashierModal: React.FC = () => {
                       : 'Deriv DP2P Portal / Official Cashier to 0728424076 (connect a Payments-scoped Deriv API Token for in-app WS dispatch).'}
                   </div>
                   <div className="text-slate-500">
-                    Direct server payouts (Daraja B2C to 254728424076, Daraja B2B to Paybill 247247, or D Cash App) activate automatically once full Daraja Consumer Key/Secret &amp; valid https:// DCASH_API_URL are set in Secrets.
+                    {mpesaGatewayStatus.liveWithdrawalReady
+                      ? `Connected Secrets Active: Daraja B2C (Shortcode #${
+                          mpesaGatewayStatus.b2cShortcode || mpesaGatewayStatus.shortcode
+                        }), Daraja B2B (Shortcode #${
+                          mpesaGatewayStatus.b2bShortcode || mpesaGatewayStatus.shortcode
+                        }), KCB Buni OAuth, & PayHero API v2 are online for live payouts & transfers.`
+                      : 'Direct server payouts (Daraja B2C, Daraja B2B, KCB Buni, & PayHero) activate automatically from saved Secrets.'}
                   </div>
                 </div>
               </div>
@@ -2361,7 +2459,7 @@ export const CashierModal: React.FC = () => {
               {/* Withdrawal Method Selection */}
               <div>
                 <label className="text-slate-700 font-bold block mb-2">Select Withdrawal Destination</label>
-                <div className="grid grid-cols-2 sm:grid-cols-6 gap-2">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                   <button
                     type="button"
                     onClick={() => {
@@ -2381,12 +2479,28 @@ export const CashierModal: React.FC = () => {
 
                   <button
                     type="button"
-                    onClick={() => setCashierTab('kcb')}
+                    onClick={() => {
+                      setKcbInitialAction('WITHDRAWAL');
+                      setCashierTab('kcb');
+                    }}
                     className="p-3 rounded-xl border flex flex-col items-start gap-1.5 transition-all cursor-pointer bg-emerald-50/50 border-emerald-300 text-slate-900 hover:border-[#004d25] hover:bg-emerald-50"
                   >
                     <Landmark className="w-4 h-4 text-[#004d25]" />
                     <span className="font-bold text-xs text-slate-900">KCB iBank</span>
                     <span className="text-[10px] text-[#004d25] font-mono font-semibold">IFT / 522522</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPayheroInitialAction('WITHDRAWAL');
+                      setCashierTab('payhero');
+                    }}
+                    className="p-3 rounded-xl border flex flex-col items-start gap-1.5 transition-all cursor-pointer bg-indigo-50/50 border-indigo-300 text-slate-900 hover:border-indigo-600 hover:bg-indigo-50"
+                  >
+                    <Wallet className="w-4 h-4 text-indigo-600" />
+                    <span className="font-bold text-xs text-slate-900">PayHero Payout</span>
+                    <span className="text-[10px] text-indigo-700 font-mono font-semibold">M-Pesa / Bank</span>
                   </button>
 
                   <button
@@ -2433,7 +2547,7 @@ export const CashierModal: React.FC = () => {
                   >
                     <Users className="w-4 h-4 text-emerald-700" />
                     <span className="font-bold text-xs text-slate-900">Deriv DP2P</span>
-                    <span className="text-[10px] text-emerald-700 font-mono font-semibold">M-Pesa Agents</span>
+                    <span className="text-[10px] text-emerald-700 font-mono font-semibold">M-Pesa / B2B</span>
                   </button>
                 </div>
               </div>
@@ -2485,6 +2599,17 @@ export const CashierModal: React.FC = () => {
                           }`}
                         >
                           Use 0793950512
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setWithdrawDestination('+254183974572')}
+                          className={`px-2.5 py-2 rounded-xl border font-mono text-[11px] font-bold cursor-pointer whitespace-nowrap ${
+                            normalizeKenyanPhone(withdrawDestination).local === '0183974572'
+                              ? 'bg-emerald-600 border-emerald-600 text-white'
+                              : 'bg-emerald-50 hover:bg-emerald-100 border-emerald-300 text-emerald-800'
+                          }`}
+                        >
+                          Till Line +254183974572
                         </button>
                       </>
                     )}
@@ -2578,10 +2703,10 @@ export const CashierModal: React.FC = () => {
           {cashierTab === 'valtex' && <ValtexPanel />}
 
           {/* TAB 6: PAYHERO KENYA APP */}
-          {cashierTab === 'payhero' && <PayHeroPanel />}
+          {cashierTab === 'payhero' && <PayHeroPanel initialAction={payheroInitialAction} />}
 
           {/* TAB 7: KCB BANK APP DIRECT TRANSFER */}
-          {cashierTab === 'kcb' && <KcbTransferPanel />}
+          {cashierTab === 'kcb' && <KcbTransferPanel initialAction={kcbInitialAction} />}
 
           {/* TAB 5: TRANSACTION HISTORY */}
           {cashierTab === 'history' && (

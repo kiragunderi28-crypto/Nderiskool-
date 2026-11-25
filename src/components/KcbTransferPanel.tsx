@@ -49,6 +49,7 @@ interface KcbBridgeStatus {
     withdrawUrl: string;
     transferUrl: string;
     inquiryUrl: string;
+    ipnUrl: string;
     callbackUrl: string;
     confirmUrl: string;
   };
@@ -63,7 +64,23 @@ interface KcbBridgeStatus {
   };
 }
 
-export const KcbTransferPanel: React.FC = () => {
+interface KcbIpnWebhookItem {
+  id: string;
+  receivedAt: number;
+  endpoint?: string;
+  reference?: string;
+  resultCode?: string;
+  resultDesc?: string;
+  mpesaReceipt?: string;
+  matchedTransaction: boolean;
+  sourceIp?: string;
+}
+
+interface KcbTransferPanelProps {
+  initialAction?: 'DEPOSIT' | 'WITHDRAWAL' | 'TRANSFER';
+}
+
+export const KcbTransferPanel: React.FC<KcbTransferPanelProps> = ({ initialAction }) => {
   const {
     account,
     realAccount,
@@ -81,8 +98,14 @@ export const KcbTransferPanel: React.FC = () => {
       const d = (params.get('direction') || params.get('action') || '').toUpperCase();
       if (d === 'DEPOSIT' || d === 'WITHDRAWAL' || d === 'TRANSFER') return d;
     } catch {}
-    return 'DEPOSIT';
+    return initialAction || 'DEPOSIT';
   });
+
+  useEffect(() => {
+    if (initialAction) {
+      setAction(initialAction);
+    }
+  }, [initialAction]);
 
   const [kcbRail, setKcbRail] = useState<'kcb_account' | 'paybill_522522' | 'kcb_vooma' | 'pesalink'>(() => {
     try {
@@ -153,6 +176,9 @@ export const KcbTransferPanel: React.FC = () => {
     text: string;
   } | null>(null);
 
+  const [ipnFeed, setIpnFeed] = useState<KcbIpnWebhookItem[]>([]);
+  const [isLoadingIpn, setIsLoadingIpn] = useState<boolean>(false);
+
   const [statusInfo, setStatusInfo] = useState<KcbBridgeStatus>(() => {
     const origin = typeof window !== 'undefined' ? window.location.origin : '';
     return {
@@ -180,6 +206,7 @@ export const KcbTransferPanel: React.FC = () => {
         withdrawUrl: origin ? `${origin}/api/kcb/withdraw` : '/api/kcb/withdraw',
         transferUrl: origin ? `${origin}/api/kcb/transfer` : '/api/kcb/transfer',
         inquiryUrl: origin ? `${origin}/api/kcb/account-inquiry` : '/api/kcb/account-inquiry',
+        ipnUrl: origin ? `${origin}/api/kcb/ipn` : '/api/kcb/ipn',
         callbackUrl: origin ? `${origin}/api/kcb/callback` : '/api/kcb/callback',
         confirmUrl: origin ? `${origin}/api/kcb/confirm` : '/api/kcb/confirm',
       },
@@ -243,9 +270,27 @@ export const KcbTransferPanel: React.FC = () => {
     }
   }, []);
 
+  const loadKcbIpnFeed = useCallback(async () => {
+    setIsLoadingIpn(true);
+    try {
+      const res = await fetch('/api/kcb/ipn');
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.recentWebhooks)) {
+          setIpnFeed(data.recentWebhooks);
+        }
+      }
+    } catch {
+      // keep existing feed
+    } finally {
+      setIsLoadingIpn(false);
+    }
+  }, []);
+
   useEffect(() => {
     loadKcbStatus();
-  }, [loadKcbStatus]);
+    loadKcbIpnFeed();
+  }, [loadKcbStatus, loadKcbIpnFeed]);
 
   const parsedPhone = normalizeKenyanPhone(phone);
   const kesAmount = usdToKes(Math.max(0, usdAmount));
@@ -657,8 +702,13 @@ export const KcbTransferPanel: React.FC = () => {
               openHref: `${statusInfo.urls.transferUrl}?amount=${safeAmt}&account=${safeAcct}&rail=${kcbRail}`,
             },
             {
+              key: 'ipn',
+              label: 'KCB Buni Instant Payment Notification (IPN) URL (POST)',
+              value: statusInfo.urls.ipnUrl,
+            },
+            {
               key: 'callback',
-              label: 'KCB Buni / IPN Settlement Callback URL (POST)',
+              label: 'KCB Buni Funds Transfer Callback URL (POST)',
               value: statusInfo.urls.callbackUrl,
             },
           ].map((item) => (
@@ -1215,6 +1265,66 @@ export const KcbTransferPanel: React.FC = () => {
                 </div>
               );
             })}
+          </div>
+        )}
+      </div>
+
+      {/* KCB Buni IPN Webhook Listener & Recent Notifications */}
+      <div className="bg-white border border-slate-200 rounded-xl p-3.5 shadow-xs space-y-2.5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <span className="font-bold text-slate-900 text-xs block">
+              KCB IPN (Instant Payment Notification) Receiver
+            </span>
+            <span className="text-[10px] font-mono text-slate-500">
+              Accepts KCB Buni IPN &amp; Paybill {statusInfo.kcbPaybill} webhooks (Signature HMAC-SHA256 hex/base64 or Bearer/API-Key when secret is set) and replies &#123;statusCode: &quot;0&quot;, statusMessage: &quot;Success&quot;&#125;.
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={loadKcbIpnFeed}
+            disabled={isLoadingIpn}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 font-mono text-[10px] font-bold cursor-pointer disabled:opacity-60"
+          >
+            <RefreshCw className={`w-3 h-3 ${isLoadingIpn ? 'animate-spin' : ''}`} />
+            <span>Refresh IPN</span>
+          </button>
+        </div>
+
+        {ipnFeed.length === 0 ? (
+          <div className="p-3 rounded-lg border border-dashed border-slate-200 bg-slate-50/70 font-mono text-[10px] text-slate-500">
+            No incoming KCB IPN notifications recorded yet. Register <strong>{statusInfo.urls.ipnUrl}</strong> in KCB Buni IPN settings to auto-credit Paybill {statusInfo.kcbPaybill} &amp; iBank deposits in real time.
+          </div>
+        ) : (
+          <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+            {ipnFeed.map((w) => (
+              <div
+                key={w.id}
+                className="flex flex-wrap items-center justify-between gap-2 px-2.5 py-2 rounded-lg bg-slate-50 border border-slate-200 font-mono text-[10px]"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="font-bold text-slate-900">{w.mpesaReceipt || w.reference || 'UNMATCHED'}</span>
+                    {w.resultCode && (
+                      <span className="px-1.5 py-0.5 rounded bg-slate-200 text-slate-800 text-[9px] font-bold">
+                        {w.resultCode}
+                      </span>
+                    )}
+                    <span className="text-slate-400">{new Date(w.receivedAt).toLocaleTimeString()}</span>
+                  </div>
+                  {w.resultDesc && <span className="text-slate-600 block truncate">{w.resultDesc}</span>}
+                </div>
+                <span
+                  className={`px-2 py-0.5 rounded text-[9px] font-bold shrink-0 ${
+                    w.matchedTransaction
+                      ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                      : 'bg-amber-100 text-amber-900 border border-amber-200'
+                  }`}
+                >
+                  {w.matchedTransaction ? 'Matched Tx' : 'Logged IPN'}
+                </span>
+              </div>
+            ))}
           </div>
         )}
       </div>

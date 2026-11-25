@@ -52,7 +52,11 @@ interface PayHeroBridgeStatus {
   };
 }
 
-export const PayHeroPanel: React.FC = () => {
+interface PayHeroPanelProps {
+  initialAction?: 'DEPOSIT' | 'WITHDRAWAL' | 'TRANSFER';
+}
+
+export const PayHeroPanel: React.FC<PayHeroPanelProps> = ({ initialAction }) => {
   const {
     account,
     realAccount,
@@ -72,8 +76,14 @@ export const PayHeroPanel: React.FC = () => {
       const c = params.get('cashier')?.toLowerCase();
       if (c === 'transfer' || c === 'money_transfer') return 'TRANSFER';
     } catch {}
-    return 'DEPOSIT';
+    return initialAction || 'DEPOSIT';
   });
+
+  useEffect(() => {
+    if (initialAction) {
+      setAction(initialAction);
+    }
+  }, [initialAction]);
   const [transferFundingSource, setTransferFundingSource] = useState<'STANDALONE_GATEWAY' | 'DERIV_REAL'>('STANDALONE_GATEWAY');
 
   const [transferRail, setTransferRail] = useState<'mobile' | 'paybill' | 'till' | 'bank'>('mobile');

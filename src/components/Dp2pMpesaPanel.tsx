@@ -829,7 +829,27 @@ export const Dp2pMpesaPanel: React.FC = () => {
             <div>
               <div className="flex items-center justify-between mb-1">
                 <label className="font-bold text-slate-800 text-xs">Destination Paybill / Till (PartyB)</label>
-                <div className="flex gap-1 font-mono text-[9px]">
+                <div className="flex flex-wrap gap-1 font-mono text-[9px]">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setB2bCommandId('BusinessBuyGoods');
+                      setB2bPartyB('1953263');
+                    }}
+                    className="px-1.5 py-0.5 rounded bg-emerald-100 hover:bg-emerald-200 text-emerald-900 font-bold cursor-pointer"
+                  >
+                    Till 1953263
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setB2bCommandId('BusinessPayBill');
+                      setB2bPartyB('1470353');
+                    }}
+                    className="px-1.5 py-0.5 rounded bg-emerald-100 hover:bg-emerald-200 text-emerald-900 font-bold cursor-pointer"
+                  >
+                    Store 1470353
+                  </button>
                   <button
                     type="button"
                     onClick={() => {

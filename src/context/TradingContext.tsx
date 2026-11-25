@@ -148,6 +148,9 @@ interface TradingContextType {
     b2bEndpoint?: string;
     txStatusEndpoint?: string;
     shortcode?: string;
+    storeNumber?: string;
+    tillNumber?: string;
+    stkPartyB?: string;
     b2cShortcode?: string;
     b2bShortcode?: string;
     stkTransactionType?: string;
@@ -642,6 +645,9 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
     b2bEndpoint?: string;
     txStatusEndpoint?: string;
     shortcode?: string;
+    storeNumber?: string;
+    tillNumber?: string;
+    stkPartyB?: string;
     b2cShortcode?: string;
     b2bShortcode?: string;
     stkTransactionType?: string;
@@ -716,6 +722,9 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
           txStatusEndpoint:
             data.txStatusEndpoint || 'https://api.safaricom.co.ke/mpesa/transactionstatus/v1/query',
           shortcode: data.shortcode,
+          storeNumber: data.storeNumber,
+          tillNumber: data.tillNumber,
+          stkPartyB: data.stkPartyB,
           b2cShortcode: data.b2cShortcode,
           b2bShortcode: data.b2bShortcode,
           stkTransactionType: data.stkTransactionType,
